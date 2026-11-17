@@ -1,0 +1,18 @@
+{
+  "name": "what-your-music-looks-like",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Recent Last.fm listens shown as floating album-player cards emerging from a photo of a phone.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "start:env": "node --env-file=.env server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

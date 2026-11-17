@@ -1,0 +1,541 @@
+/* ==================================================================
+   What your music looks like — photo-edit scene & giant player cards
+   Plain CSS only. The cards are physical-looking objects in the photo.
+   ================================================================== */
+
+:root {
+  /* Phone position in the photo, in percent. Set with ?debug=1. */
+  --phone-x: 50;
+  --phone-y: 68;
+
+  /* Which part of the photo is visible with background-size: cover. */
+  --photo-x: 50%;
+  --photo-y: 50%;
+
+  /* Card size. 9:14 portrait poster, about 56% of a phone's height. */
+  --card-w: min(78vw, 340px);
+  --card-h: calc(var(--card-w) * 14 / 9);
+  --card-scale: 1;
+  --radius-scale: 1;
+  --radius: 0px;
+  --focus: 1;
+
+  /* Front cover's dominant colour, extracted from the proxied image. */
+  --tint-rgb: 120, 150, 210;
+  --tint-top: #293752;
+  --tint-bottom: #0e1420;
+  --gloss-shift: 0px;
+
+  --scene-photo: url('/assets/me.svg');
+}
+
+@media (min-width: 700px) {
+  :root {
+    --card-w: clamp(290px, 27vw, 380px);
+    --phone-y: 68;
+  }
+}
+
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: #05070d;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, system-ui, Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* ------------------------------------------------------------------ *
+   1. The photo scene and its lighting
+   ------------------------------------------------------------------ */
+.scene {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+  perspective: 1500px;
+  perspective-origin: 50% 46%;
+}
+
+.scene__photo {
+  position: absolute;
+  inset: -2%;
+  z-index: -4;
+  background-image: var(--scene-photo);
+  background-position: var(--photo-x) var(--photo-y);
+  background-size: cover;
+  transform: scale(1.03);
+  filter: saturate(.92);
+}
+
+.scene__grade {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  background:
+    linear-gradient(180deg, rgba(4, 6, 14, .78) 0%, rgba(4, 6, 14, .12) 32%, rgba(4, 6, 14, .48) 72%, rgba(4, 6, 14, .9) 100%),
+    radial-gradient(ellipse at 50% 55%, transparent 30%, rgba(2, 4, 10, .45) 100%);
+}
+
+/* Very subtle film grain, drawn by the browser (no image file needed). */
+.scene__grain {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  opacity: .045;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.7'/%3E%3C/svg%3E");
+}
+
+/* Colour from the cover spilling onto the surface around the phone. */
+.surface-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  background: radial-gradient(ellipse at calc(var(--phone-x) * 1%) calc(var(--phone-y) * 1%),
+    rgba(var(--tint-rgb), .32), rgba(var(--tint-rgb), .09) 16%, transparent 34%);
+  transition: background .5s ease;
+}
+
+/* A cone of light rising from the flat phone screen. */
+.light-cone {
+  position: absolute;
+  left: calc(var(--phone-x) * 1%);
+  top: calc(var(--phone-y) * 1%);
+  z-index: 1;
+  width: min(78vw, 640px);
+  height: min(78vh, 720px);
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  transform-origin: bottom center;
+  clip-path: polygon(39% 100%, 61% 100%, 100% 0, 0 0);
+  background: linear-gradient(0deg, rgba(205, 230, 255, .42), rgba(160, 200, 255, .12) 42%, transparent 100%);
+  filter: blur(16px);
+  mix-blend-mode: screen;
+  opacity: .8;
+  transition: opacity .4s ease;
+}
+body.is-wheel .light-cone { opacity: .38; }
+
+/* Blurred shadow on the surface + bright contact line where card meets phone. */
+.cast-shadow {
+  position: absolute;
+  left: calc(var(--phone-x) * 1%);
+  top: calc(var(--phone-y) * 1% + 12px);
+  z-index: 2;
+  width: calc(var(--card-w) * var(--card-scale) * 1.5);
+  height: calc(var(--card-w) * var(--card-scale) * .26);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, .72), rgba(0, 0, 0, .28) 55%, transparent 78%);
+  filter: blur(12px);
+}
+
+.contact-line {
+  position: absolute;
+  left: calc(var(--phone-x) * 1%);
+  top: calc(var(--phone-y) * 1%);
+  z-index: 3;
+  width: calc(var(--card-w) * var(--card-scale) * .82);
+  height: 2px;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, rgba(225, 242, 255, .95), transparent);
+  box-shadow: 0 0 16px 4px rgba(170, 215, 255, .55);
+}
+
+.phone-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(circle at calc(var(--phone-x) * 1%) calc(var(--phone-y) * 1%),
+    rgba(190, 225, 255, .34) 0%, rgba(140, 190, 255, .12) 8%, transparent 22%);
+  mix-blend-mode: screen;
+}
+
+/* ------------------------------------------------------------------ *
+   2. Header
+   ------------------------------------------------------------------ */
+.topbar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 30;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: max(16px, env(safe-area-inset-top)) clamp(14px, 4vw, 42px) 16px;
+  pointer-events: none;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand__mark {
+  display: grid; place-items: center;
+  width: 34px; height: 34px; border-radius: 11px; font-size: 18px;
+  background: rgba(255, 255, 255, .1);
+  border: 1px solid rgba(255, 255, 255, .2);
+  backdrop-filter: blur(8px);
+}
+.brand__title { margin: 0; font-size: clamp(13px, 1.8vw, 17px); font-weight: 650; letter-spacing: -.02em; }
+.brand__sub { margin: 2px 0 0; font-size: 11px; color: rgba(255, 255, 255, .62); }
+
+.meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 11px; color: rgba(255, 255, 255, .68); }
+.status { display: inline-flex; align-items: center; gap: 6px; }
+.status__dot { width: 6px; height: 6px; border-radius: 50%; background: #8de0b0; box-shadow: 0 0 10px #8de0b0; }
+.status.is-stale .status__dot { background: #ffcc7a; box-shadow: 0 0 10px #ffcc7a; }
+.status.is-error .status__dot { background: #ff8b8b; box-shadow: 0 0 10px #ff8b8b; }
+.meta__line { display: flex; gap: 10px; align-items: center; }
+.meta__counter { padding: 2px 7px; border-radius: 99px; background: rgba(255, 255, 255, .1); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ *
+   3. Stage, deck and the giant card
+   ------------------------------------------------------------------ */
+.stage {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  transform-style: preserve-3d;
+  touch-action: none; /* swipes are handled in JS */
+}
+
+/* Pushed back by the wheel radius: the front card ends up at z = 0. */
+.deck {
+  position: relative;
+  width: var(--card-w);
+  height: var(--card-h);
+  transform-style: preserve-3d;
+  transform: translateZ(calc(-1 * var(--radius)));
+  transition: transform .5s cubic-bezier(.2, .8, .2, 1);
+}
+body.is-wheel .deck { transition: none; }
+
+.card {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  pointer-events: none;
+  will-change: transform, opacity, filter;
+}
+body:not(.is-wheel) .card:not(:first-child) { opacity: 0; visibility: hidden; }
+body.is-wheel .card { pointer-events: auto; cursor: grab; }
+
+/* Scale + a small random tilt live on this wrapper so they never fight the
+   rise animation on .card__surface or the wheel rotation on .card. */
+.card__scaler {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  transform: scale(calc(var(--card-scale) * (0.74 + 0.26 * var(--focus))))
+             rotateZ(var(--tilt-z, 0deg)) rotateX(var(--tilt-x, 0deg));
+  transition: transform .35s ease;
+}
+
+.card__surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 28px;
+  transform-origin: 50% 100%;
+  box-shadow:
+    0 34px 80px rgba(0, 0, 0, .62),
+    0 0 46px rgba(var(--tint-rgb), .28),
+    inset 0 1px 0 rgba(255, 255, 255, .22);
+  animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both;
+}
+
+/* Gradient rim light: bright at top-left and bottom-right, like a real object. */
+.card__surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, .8), rgba(255, 255, 255, .06) 38%,
+    rgba(255, 255, 255, .04) 62%, rgba(255, 255, 255, .42));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+/* Two materials stacked: frosted glass underneath, cover-tinted colour on top. */
+.card__glass,
+.card__tint { position: absolute; inset: 0; }
+.card__glass {
+  background: linear-gradient(160deg, rgba(58, 64, 82, .68), rgba(10, 14, 24, .84));
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  opacity: calc(1 - var(--focus));
+  transition: opacity .35s ease;
+}
+.card__tint {
+  background: linear-gradient(180deg, var(--tint-top), var(--tint-bottom));
+  opacity: var(--focus);
+  transition: opacity .35s ease, background .4s ease;
+}
+
+/* Diagonal reflection that slides slightly with pointer / scroll. */
+.card__gloss {
+  position: absolute;
+  inset: -25%;
+  z-index: 5;
+  pointer-events: none;
+  transform: translateX(var(--gloss-shift));
+  background: linear-gradient(115deg,
+    transparent 34%, rgba(255, 255, 255, .08) 44%,
+    rgba(255, 255, 255, .02) 53%, transparent 66%);
+}
+
+@keyframes emerge {
+  0% {
+    opacity: 0;
+    transform: translate(calc((var(--phone-x) - 50) * 1vw), calc((var(--phone-y) - 50) * 1vh))
+               rotateX(80deg) scale(.15);
+    filter: blur(9px) brightness(1.9);
+  }
+  55% { opacity: 1; }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0) rotateX(0deg) scale(1);
+    filter: blur(0) brightness(1);
+  }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes slideFront {
+  from { opacity: 0; transform: translateX(26px) scale(.94); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+body:not(.is-wheel) .card:first-child .card__surface {
+  animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both,
+             float 5s ease-in-out 1000ms infinite;
+}
+body.is-wheel .card__surface { animation: float 6s ease-in-out infinite; animation-delay: calc(var(--i, 0) * -430ms); }
+body.is-wheel .card.is-entering .card__surface {
+  animation: emerge 620ms cubic-bezier(.16, 1.1, .3, 1) both;
+  animation-delay: calc(var(--i, 0) * 12ms);
+}
+.card.is-new .card__scaler { animation: slideFront 550ms ease-out both; }
+
+/* ------------------------------------------------------------------ *
+   4. The iOS-style player contents
+   ------------------------------------------------------------------ */
+.card__content {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 13px;
+}
+
+.cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 12px 26px rgba(0, 0, 0, .4);
+}
+.cover img,
+.cover__gradient { display: block; width: 100%; height: 100%; object-fit: cover; }
+.cover__gradient {
+  display: grid; place-items: center;
+  font-size: 84px; font-weight: 800; color: rgba(255, 255, 255, .78);
+  text-shadow: 0 4px 26px rgba(0, 0, 0, .35);
+}
+.cover__shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, transparent 62%, rgba(0, 0, 0, .3));
+}
+
+.card__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 3px 0;
+}
+.card__labels { flex: 1; min-width: 0; }
+.card__title,
+.card__artist {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.card__title { font-size: clamp(16px, 1.7vw, 21px); font-weight: 700; letter-spacing: -.02em; }
+.card__artist { margin-top: 2px; font-size: 12px; color: rgba(255, 255, 255, .6); }
+.card__icons { display: flex; gap: 8px; flex: 0 0 auto; color: rgba(255, 255, 255, .85); }
+.card__icons svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.eq rect { fill: currentColor; transform-origin: center bottom; }
+.eq.is-live rect { animation: eq 900ms ease-in-out infinite alternate; }
+.eq.is-live rect:nth-child(2) { animation-delay: -600ms; }
+.eq.is-live rect:nth-child(3) { animation-delay: -300ms; }
+.eq.is-live rect:nth-child(4) { animation-delay: -150ms; }
+@keyframes eq { from { transform: scaleY(.3); } to { transform: scaleY(1); } }
+
+.card__time {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 3px 0; font-size: 10.5px; color: rgba(255, 255, 255, .62);
+}
+.card__time--live { color: #d7f3e4; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: #79e6a5; box-shadow: 0 0 9px #79e6a5; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
+
+.progress { padding: 14px 3px 0; }
+.progress__track { position: relative; height: 4px; border-radius: 99px; background: rgba(255, 255, 255, .24); }
+.progress__fill { width: 0; height: 100%; border-radius: 99px; background: #fff; box-shadow: 0 0 10px rgba(255, 255, 255, .55); }
+.progress__knob {
+  position: absolute; top: 50%; left: 0;
+  width: 10px; height: 10px; border-radius: 50%; background: #fff;
+  transform: translate(-50%, -50%); box-shadow: 0 0 9px rgba(255, 255, 255, .8);
+}
+.progress__times {
+  display: flex; justify-content: space-between;
+  margin-top: 7px; font-size: 10px; font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, .66);
+}
+
+.controls {
+  display: flex; align-items: center; justify-content: center;
+  gap: clamp(26px, 5vw, 44px);
+  padding: clamp(12px, 2.2vh, 22px) 0 8px;
+}
+.control {
+  display: grid; place-items: center;
+  padding: 0; border: 0; background: transparent; color: #fff;
+  cursor: pointer; transition: transform .15s ease, opacity .15s ease;
+}
+.control:hover { transform: scale(1.12); }
+.control svg { width: 27px; height: 27px; fill: currentColor; }
+.control--play svg { width: 36px; height: 36px; }
+
+.volume {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: auto; padding: 6px 3px 0;
+  color: rgba(255, 255, 255, .8);
+}
+.volume svg { width: 15px; height: 15px; flex: 0 0 auto; fill: currentColor; }
+.volume__track { position: relative; flex: 1; height: 3px; border-radius: 99px; background: rgba(255, 255, 255, .22); }
+.volume__fill { width: 72%; height: 100%; border-radius: 99px; background: #fff; }
+.volume__knob { position: absolute; top: 50%; left: 72%; width: 8px; height: 8px; border-radius: 50%; background: #fff; transform: translate(-50%, -50%); }
+
+/* ------------------------------------------------------------------ *
+   5. Loading / empty / error states
+   ------------------------------------------------------------------ */
+.card.is-skeleton .card__surface { animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both; }
+.card.is-skeleton .card__tint { opacity: 1; }
+.skeleton {
+  border-radius: 14px;
+  background: linear-gradient(100deg, rgba(255, 255, 255, .08) 20%, rgba(255, 255, 255, .22) 50%, rgba(255, 255, 255, .08) 80%);
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+.skeleton--cover { width: 100%; aspect-ratio: 1 / 1; border-radius: 18px; }
+.skeleton--title { width: 72%; height: 18px; margin-top: 16px; }
+.skeleton--artist { width: 48%; height: 11px; margin-top: 10px; }
+.skeleton--bar { width: 100%; height: 4px; margin-top: auto; }
+@keyframes shimmer { to { background-position: -220% 0; } }
+
+.state-card {
+  position: absolute;
+  width: min(88vw, 380px);
+  padding: 26px 24px;
+  border-radius: 24px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, .26);
+  background: rgba(14, 18, 32, .68);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+  animation: emerge 800ms cubic-bezier(.16, 1.1, .3, 1) both;
+}
+.state-card__icon { font-size: 34px; opacity: .8; }
+.state-card h2 { margin: 10px 0 8px; font-size: 19px; }
+.state-card p { margin: 0; font-size: 13px; line-height: 1.55; color: rgba(255, 255, 255, .72); }
+.state-card__button,
+.banner button {
+  margin-top: 16px; padding: 9px 16px; border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, .3);
+  background: rgba(255, 255, 255, .14); color: #fff; font: inherit; font-size: 12px; cursor: pointer;
+}
+.state-card__button:hover, .banner button:hover { background: rgba(255, 255, 255, .24); }
+
+/* ------------------------------------------------------------------ *
+   6. Small UI over the scene
+   ------------------------------------------------------------------ */
+.hint {
+  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%); z-index: 25; margin: 0; padding: 9px 16px;
+  border-radius: 99px; white-space: nowrap; font-size: 11.5px;
+  color: rgba(255, 255, 255, .78);
+  background: rgba(10, 14, 26, .42); border: 1px solid rgba(255, 255, 255, .14);
+  backdrop-filter: blur(10px); transition: opacity .4s ease; pointer-events: none;
+}
+.hint.is-hidden { opacity: 0; }
+.back {
+  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%); z-index: 26; padding: 11px 20px; border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, .3); background: rgba(18, 24, 42, .62);
+  color: #fff; font: inherit; font-size: 12px; cursor: pointer; backdrop-filter: blur(12px);
+}
+.back:hover { background: rgba(40, 52, 84, .75); }
+.banner {
+  position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 28;
+  display: flex; align-items: center; gap: 12px; max-width: min(92vw, 620px);
+  padding: 10px 14px; border-radius: 14px; font-size: 11.5px; line-height: 1.4;
+  background: rgba(48, 34, 12, .74); border: 1px solid rgba(255, 204, 122, .4);
+  backdrop-filter: blur(12px);
+}
+.banner button { margin: 0; flex: 0 0 auto; }
+
+/* ------------------------------------------------------------------ *
+   7. ?debug=1 tuning panel
+   ------------------------------------------------------------------ */
+.debug {
+  position: absolute; right: 14px; bottom: 14px; z-index: 40;
+  width: min(270px, 78vw); padding: 13px 15px; border-radius: 14px; font-size: 11.5px;
+  background: rgba(8, 12, 24, .9); border: 1px solid rgba(140, 200, 255, .4);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
+}
+.debug p { margin: 7px 0; color: rgba(255, 255, 255, .7); }
+.debug code { display: block; color: #a9e0ff; line-height: 1.55; white-space: pre-line; }
+.debug__row { display: block; margin-top: 9px; }
+.debug__row span { display: flex; justify-content: space-between; }
+.debug__row input { width: 100%; accent-color: #8cc8ff; }
+.debug-overlay { position: absolute; inset: 0; z-index: 35; cursor: crosshair; }
+
+/* ------------------------------------------------------------------ *
+   8. Reduced motion: fades only, no float, no spring
+   ------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .card__surface,
+  body:not(.is-wheel) .card:first-child .card__surface,
+  body.is-wheel .card__surface,
+  body.is-wheel .card.is-entering .card__surface,
+  .card.is-new .card__scaler,
+  .state-card, .live-dot, .skeleton, .eq.is-live rect {
+    animation: none !important;
+  }
+  .card__scaler, .deck, .phone-glow, .light-cone, .hint, .control { transition: none !important; }
+}
