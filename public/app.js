@@ -9,26 +9,54 @@
  *
  * The visual idea: a giant iOS "Now Playing" card is a physical object inside
  * the photo. It rises out of the flat phone, casts a shadow, and (on scroll /
- * swipe / drag / arrow keys) becomes a 3D wheel of your recent listens.
- * Your most-played track is the biggest and brightest; quieter ones stay
- * smaller but always readable. Clicking any visible card selects it.
+ * swipe / drag / arrow keys) becomes a tilted Saturn ring of upright posters
+ * around that phone. Your most-played track is the biggest and brightest;
+ * quieter ones stay smaller but always readable. Clicking any visible card
+ * selects it reliably.
  */
 
 (() => {
   const $ = (id) => document.getElementById(id);
   const root = document.documentElement;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  // Layout-only poster size used for spacing and the bounding box. The actual
+  // per-frame size curve is --front-boost / --back-shrink (see applyWheel).
+  const RING_FRONT_SCALE = 1.22;
+  const RING_FRONT_WIDTH = 0.92; // front poster width / front neighbour spacing
   const els = {
     scene: $('scene'), stage: $('stage'), deck: $('deck'),
     username: $('username'), refreshTime: $('refreshTime'), counter: $('counter'),
     status: $('status'), statusText: $('statusText'),
     hint: $('hint'), backButton: $('backButton'),
+    caption: $('caption'), captionRank: $('captionRank'),
+    captionPlays: $('captionPlays'), captionTitle: $('captionTitle'),
+    captionArtists: $('captionArtists'),
     banner: $('banner'), bannerText: $('bannerText'), retryButton: $('retryButton'),
     stateCard: $('stateCard'), stateIcon: $('stateIcon'), stateTitle: $('stateTitle'),
     stateBody: $('stateBody'), stateRetry: $('stateRetry'),
     debugPanel: $('debugPanel'), debugOverlay: $('debugOverlay'), debugValues: $('debugValues'),
     scaleSlider: $('scaleSlider'), scaleOut: $('scaleOut'),
-    radiusSlider: $('radiusSlider'), radiusOut: $('radiusOut')
+    ringRxSlider: $('ringRxSlider'), ringRxOut: $('ringRxOut'),
+    ringRollSlider: $('ringRollSlider'), ringRollOut: $('ringRollOut'),
+    ringTiltSlider: $('ringTiltSlider'), ringTiltOut: $('ringTiltOut'),
+    perspectiveSlider: $('perspectiveSlider'), perspectiveOut: $('perspectiveOut'),
+    ringCySlider: $('ringCySlider'), ringCyOut: $('ringCyOut'),
+    ringCardSlider: $('ringCardSlider'), ringCardOut: $('ringCardOut'),
+    frontBoostSlider: $('frontBoostSlider'), frontBoostOut: $('frontBoostOut'),
+    backShrinkSlider: $('backShrinkSlider'), backShrinkOut: $('backShrinkOut'),
+    anchorPick: $('anchorPick'), hitOutline: $('hitOutline')
   };
+
+  // The two halves of the Saturn ring are siblings of the cards inside the
+  // deck, so their z-index can interleave with the depth-sorted posters.
+  els.ringBack = makeRingSvg('back');
+  els.ringFront = makeRingSvg('front');
+
+  // Kept between the two ring halves for stable DOM ordering. Its old masked
+  // photo made back posters disappear behind the person; CSS now keeps it
+  // hidden so every poster remains visible.
+  els.personCover = el('div', 'person-cover');
+  els.personCover.setAttribute('aria-hidden', 'true');
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -48,14 +76,34 @@
     paused: false,        // freezes the visual progress only
     nowPlayingStart: Date.now(),
     cardScale: 1,
-    radiusScale: 1,
     anchor: { x: 51, y: 52 },
+
+    // Saturn ring geometry (stage-relative; --ring-* vars keep them tunable).
+    ringRx: 52,           // % of stage width
+    ringRy: 17,           // % of stage height, before --ring-tilt
+    ringTilt: 1,          // multiplier on --ring-ry
+    ringRoll: -9,         // degrees, banks the whole ring (cards stay upright)
+    perspective: 2.2,     // camera distance f; smaller = stronger perspective
+    ringCyOffset: 0,      // px, moves the whole ellipse vertically
+    ringCardScale: 1,     // debug multiplier for the ring posters
+    frontBoost: 1.3,        // size at θ = 0
+    backShrink: 1,        // size at θ = π
+    effectiveFrontBoost: 1,
+    ring: {
+      w: 0, h: 0, cx: 0, cy: 0, baseCy: 0, rx: 0, ry: 0,
+      roll: 0, perspective: 2.2, autoPush: 0,
+      cardW: 0, cardH: 0
+    },
 
     // Stable selection: artist + track + playedAt, never an array index.
     selectedId: null,
     explicitSelection: false,
     press: null,          // pointer-down candidate for a click
-    suppressClickUntil: 0 // blocks taps right after a drag / momentum scroll
+    suppressClickUntil: 0, // blocks taps right after a drag / momentum scroll
+    debugOn: false,
+    enterStart: 0,        // staggered fly-out timestamp
+    closeAt: 0,           // reverse (fly back into the phone) timestamp
+    reorder: null         // rank reshuffle: ease each poster to its new slot
   };
 
   // Static SVGs. No brand marks: just generic player glyphs.
@@ -80,6 +128,43 @@
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  /** One half of the Saturn ring: a faint band plus a luminous elliptical line. */
+  function makeRingSvg(kind) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', `ring ring--${kind}`);
+    svg.setAttribute('aria-hidden', 'true');
+    const band = document.createElementNS(SVG_NS, 'path');
+    band.setAttribute('class', 'ring__band');
+    const line = document.createElementNS(SVG_NS, 'path');
+    line.setAttribute('class', 'ring__line');
+    // Shadows/reflections live in the front SVG so they paint above back cards
+    // but below front cards (ring--front has z-index 500).
+    const fx = kind === 'front' ? document.createElementNS(SVG_NS, 'g') : null;
+    if (fx) {
+      fx.setAttribute('class', 'ring__fx');
+      svg.append(fx, band, line);
+    } else {
+      svg.append(band, line);
+    }
+    svg._parts = { band, line, fx };
+    return svg;
+  }
+
+  /** One blurred shadow + one colour reflection per card, on the near ring. */
+  function syncRingFx(cards) {
+    const fx = els.ringFront._parts.fx;
+    if (!fx) return;
+    fx.replaceChildren();
+    cards.forEach((card) => {
+      const shadow = document.createElementNS(SVG_NS, 'ellipse');
+      shadow.setAttribute('class', 'ring__shadow');
+      const reflection = document.createElementNS(SVG_NS, 'ellipse');
+      reflection.setAttribute('class', 'ring__reflection');
+      fx.append(shadow, reflection);
+      if (card._parts) card._parts.fx = { shadow, reflection };
+    });
   }
 
   function hashString(value) {
@@ -124,8 +209,13 @@
 
     const raw = tracks.map((track) => {
       const fromLastfm = Number(track.playCount);
-      const fallback = Math.max(1, occurrences.get(playKey(track)) || 1);
-      const count = Number.isFinite(fromLastfm) && fromLastfm > 0
+      // The server sends the occurrence count; keep the local one as a fallback
+      // for older cached responses.
+      const fallback = Math.max(
+        1, Number(track.fallbackCount) || occurrences.get(playKey(track)) || 1
+      );
+      const count = fromLastfm !== null && track.playCount !== null &&
+        Number.isFinite(fromLastfm) && fromLastfm >= 0
         ? Math.floor(fromLastfm) : fallback;
       return { id: selectionId(track), count };
     });
@@ -151,16 +241,6 @@
   function formatTime(seconds) {
     const safe = Math.max(0, Math.floor(seconds));
     return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
-  }
-
-  function relativeTime(iso) {
-    if (!iso) return 'time unknown';
-    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000));
-    if (minutes < 1) return 'played just now';
-    if (minutes < 60) return `played ${minutes} min ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `played ${hours} h ago`;
-    return `played ${Math.floor(hours / 24)} d ago`;
   }
 
   function durationFor(track) {
@@ -198,6 +278,7 @@
     els.deck.replaceChildren();
     els.hint.classList.add('is-hidden');
     els.backButton.hidden = true;
+    updateCaption(null);
     els.counter.textContent = '0 / 0';
   }
 
@@ -212,42 +293,85 @@
   }
 
   function printDebug() {
+    // Show the offset actually applied, including any automatic phone clearance.
+    const effectiveCy = state.tracks.length && state.ring.w
+      ? state.ring.cy - state.ring.h * state.anchor.y / 100
+      : state.ringCyOffset;
     const text =
       `--phone-x: ${state.anchor.x.toFixed(1)};\n` +
       `--phone-y: ${state.anchor.y.toFixed(1)};\n` +
       `--card-scale: ${state.cardScale.toFixed(2)};\n` +
-      `--radius-scale: ${state.radiusScale.toFixed(2)};`;
+      `--ring-rx: ${state.ringRx.toFixed(0)}%;\n` +
+      `--ring-ry: ${state.ringRy.toFixed(0)}%;\n` +
+      `--ring-roll: ${state.ringRoll.toFixed(0)}deg;\n` +
+      `--ring-tilt: ${state.ringTilt.toFixed(2)};\n` +
+      `--perspective: ${state.perspective.toFixed(2)};\n` +
+      `--ring-cy-offset: ${effectiveCy.toFixed(0)}px;\n` +
+      `--ring-card-scale: ${state.ringCardScale.toFixed(2)}×;\n` +
+      `--front-boost: ${state.frontBoost.toFixed(2)};` +
+      ` (effective ${state.effectiveFrontBoost.toFixed(2)}${
+        state.effectiveFrontBoost < state.frontBoost - 0.001
+          ? ', capped: phone clearance' : ''})\n` +
+      `--back-shrink: ${state.backShrink.toFixed(2)};`;
     els.debugValues.textContent = text;
     console.log('[debug]', text.replace(/\n/g, ' '));
   }
 
   function applySettings() {
     root.style.setProperty('--card-scale', state.cardScale.toFixed(2));
-    root.style.setProperty('--radius-scale', state.radiusScale.toFixed(2));
+    root.style.setProperty('--ring-rx', state.ringRx.toFixed(0));
+    root.style.setProperty('--ring-ry', state.ringRy.toFixed(0));
+    root.style.setProperty('--ring-roll', `${state.ringRoll.toFixed(0)}deg`);
+    root.style.setProperty('--ring-tilt', state.ringTilt.toFixed(2));
+    root.style.setProperty('--perspective', state.perspective.toFixed(2));
+    root.style.setProperty('--ring-cy-offset', `${state.ringCyOffset.toFixed(0)}px`);
+    root.style.setProperty('--ring-card-scale', state.ringCardScale.toFixed(2));
     els.scaleOut.textContent = state.cardScale.toFixed(2);
-    els.radiusOut.textContent = `${state.radiusScale.toFixed(2)}×`;
+    els.ringRxOut.textContent = `${state.ringRx.toFixed(0)}%`;
+    els.ringRollOut.textContent = `${state.ringRoll.toFixed(0)}°`;
+    els.ringTiltOut.textContent = `${state.ringTilt.toFixed(2)}×`;
+    els.perspectiveOut.textContent = state.perspective.toFixed(2);
+    els.ringCyOut.textContent = `${state.ringCyOffset.toFixed(0)}px`;
+    els.ringCardOut.textContent = `${state.ringCardScale.toFixed(2)}×`;
+    els.frontBoostOut.textContent = state.frontBoost.toFixed(2);
+    els.backShrinkOut.textContent = state.backShrink.toFixed(2);
+    root.style.setProperty('--back-shrink', state.backShrink.toFixed(2));
     if (state.tracks.length) {
       computeRadius();
       if (state.mode === 'wheel') applyWheel();
     }
+    updateFrontBoost();
     if (!els.debugPanel.hidden) printDebug();
   }
 
   function initDebug() {
-    const on = new URLSearchParams(location.search).get('debug') === '1';
+    const params = new URLSearchParams(location.search);
+    const on = params.get('debug') === '1';
+    state.debugOn = on;
 
     try {
       const saved = JSON.parse(localStorage.getItem('wot-settings') || 'null');
-      // v1 stored viewport-relative values for the old photo. Ignore them so
-      // the new stage defaults are not silently overridden by stale storage.
-      // v2's radius scale was tuned against the old capped wheel formula, which
-      // made cards overlap; keep its anchor/card scale but start the wheel from
-      // the new default so the fix is visible without clearing storage.
-      if (saved && (saved.v === 2 || saved.v === 3)) {
-        if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) state.anchor = { x: saved.x, y: saved.y };
-        if (Number.isFinite(saved.cardScale)) state.cardScale = clamp(saved.cardScale, 0.5, 1.6);
-        if (saved.v === 3 && Number.isFinite(saved.radiusScale)) {
-          state.radiusScale = clamp(saved.radiusScale, 0.5, 2);
+      if (saved) {
+        // Older layouts kept the anchor and phone card scale.
+        if (saved.v >= 2 && saved.v <= 8) {
+          if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) state.anchor = { x: saved.x, y: saved.y };
+          if (Number.isFinite(saved.cardScale)) state.cardScale = clamp(saved.cardScale, 0.5, 1.6);
+        }
+        if (saved.v >= 4 && saved.v <= 8) {
+          if (Number.isFinite(saved.ringRx)) state.ringRx = clamp(saved.ringRx, 20, 60);
+          if (Number.isFinite(saved.ringCyOffset)) state.ringCyOffset = clamp(saved.ringCyOffset, -80, 80);
+          if (Number.isFinite(saved.ringCardScale)) state.ringCardScale = clamp(saved.ringCardScale, 0.6, 1.5);
+        }
+        if (saved.v >= 5 && saved.v <= 8) {
+          if (Number.isFinite(saved.ringRoll)) state.ringRoll = clamp(saved.ringRoll, -30, 30);
+          if (Number.isFinite(saved.ringTilt)) state.ringTilt = clamp(saved.ringTilt, 0.4, 1.8);
+          if (Number.isFinite(saved.perspective)) state.perspective = clamp(saved.perspective, 1.2, 5);
+        }
+        if (saved.v === 8 && Number.isFinite(saved.frontBoost)) {
+          state.frontBoost = clamp(saved.frontBoost, 1, 2);
+        }
+        if (saved.v === 8 && Number.isFinite(saved.backShrink)) {
+          state.backShrink = clamp(saved.backShrink, 0.3, 1);
         }
       }
     } catch (_) { /* ignore broken storage */ }
@@ -255,7 +379,14 @@
     root.style.setProperty('--phone-x', state.anchor.x.toFixed(1));
     root.style.setProperty('--phone-y', state.anchor.y.toFixed(1));
     els.scaleSlider.value = String(state.cardScale);
-    els.radiusSlider.value = String(state.radiusScale);
+    els.ringRxSlider.value = String(state.ringRx);
+    els.ringRollSlider.value = String(state.ringRoll);
+    els.ringTiltSlider.value = String(state.ringTilt);
+    els.perspectiveSlider.value = String(state.perspective);
+    els.ringCySlider.value = String(state.ringCyOffset);
+    els.ringCardSlider.value = String(state.ringCardScale);
+    els.frontBoostSlider.value = String(state.frontBoost);
+    els.backShrinkSlider.value = String(state.backShrink);
     applySettings();
 
     if (!on) return;
@@ -272,28 +403,46 @@
       root.style.setProperty('--phone-x', state.anchor.x.toFixed(1));
       root.style.setProperty('--phone-y', state.anchor.y.toFixed(1));
       saveSettings();
-      printDebug();
+      applySettings();
     }
     let dragging = false;
     els.debugOverlay.addEventListener('pointerdown', (event) => { dragging = true; setAnchor(event); });
     els.debugOverlay.addEventListener('pointermove', (event) => { if (dragging) setAnchor(event); });
     window.addEventListener('pointerup', () => { dragging = false; });
 
-    els.scaleSlider.addEventListener('input', () => {
-      state.cardScale = Number(els.scaleSlider.value);
-      saveSettings(); applySettings();
+    const bindSlider = (input, apply) => input.addEventListener('input', () => {
+      apply(Number(input.value)); saveSettings(); applySettings();
     });
-    els.radiusSlider.addEventListener('input', () => {
-      state.radiusScale = Number(els.radiusSlider.value);
-      saveSettings(); applySettings();
+    bindSlider(els.scaleSlider, (v) => { state.cardScale = v; });
+    bindSlider(els.ringRxSlider, (v) => { state.ringRx = v; });
+    bindSlider(els.ringRollSlider, (v) => { state.ringRoll = v; });
+    bindSlider(els.ringTiltSlider, (v) => { state.ringTilt = v; });
+    bindSlider(els.perspectiveSlider, (v) => { state.perspective = v; });
+    bindSlider(els.ringCySlider, (v) => { state.ringCyOffset = v; });
+    bindSlider(els.ringCardSlider, (v) => { state.ringCardScale = v; });
+    bindSlider(els.frontBoostSlider, (v) => { state.frontBoost = v; });
+    bindSlider(els.backShrinkSlider, (v) => { state.backShrink = v; });
+    // The anchor overlay covers the whole stage. Keep it off by default so
+    // debug mode can still click cards and log their data-id; enable it only
+    // while deliberately picking the phone position.
+    els.anchorPick.addEventListener('change', () => {
+      document.body.classList.toggle('pick-anchor', els.anchorPick.checked);
+    });
+    els.hitOutline.addEventListener('change', () => {
+      document.body.classList.toggle('show-hit-areas', els.hitOutline.checked);
     });
   }
 
   function saveSettings() {
     localStorage.setItem('wot-settings', JSON.stringify({
-      v: 3,
+      v: 8,
       x: state.anchor.x, y: state.anchor.y,
-      cardScale: state.cardScale, radiusScale: state.radiusScale
+      cardScale: state.cardScale,
+      ringRx: state.ringRx,
+      ringRoll: state.ringRoll, ringTilt: state.ringTilt,
+      perspective: state.perspective,
+      ringCyOffset: state.ringCyOffset, ringCardScale: state.ringCardScale,
+      frontBoost: state.frontBoost, backShrink: state.backShrink
     }));
   }
 
@@ -347,11 +496,14 @@
     card.style.setProperty('--tint-bottom', tint.bottom);
     if (!card._parts) return;
     card._parts.tintRgb = tint.rgb;
-    if (card === frontCard()) updateSceneTint();
+    if (card === frontCard() || card.dataset.id === state.selectedId) updateSceneTint();
   }
 
   function updateSceneTint() {
-    const card = frontCard();
+    // The ring line/band and the photo spill follow the SELECTED cover, even
+    // while that poster is still rotating into the front slot.
+    const cards = Array.from(els.deck.querySelectorAll('.card'));
+    const card = cards.find((item) => item.dataset.id === state.selectedId) || frontCard();
     const rgb = card && card._parts && card._parts.tintRgb;
     if (!rgb) return;
     root.style.setProperty('--tint-rgb', rgb);
@@ -377,9 +529,10 @@
     const track = state.tracks[safe];
     state.selectedId = selectionId(track);
     if (explicit) state.explicitSelection = true;
-    Array.from(els.deck.children).forEach((card, i) => {
+    Array.from(els.deck.querySelectorAll('.card')).forEach((card) => {
       card.classList.toggle('is-selected', card.dataset.id === state.selectedId);
     });
+    updateCaption(track);
   }
 
   function applyPlayVars(card, stats) {
@@ -391,11 +544,65 @@
     if (card._parts) {
       card._parts.glowBase = stats.glow;
       card._parts.playCount = stats.count;
-      if (card._parts.playLabel) {
-        card._parts.playLabel.textContent =
-          `played ${stats.count} ${stats.count === 1 ? 'time' : 'times'}`;
-      }
     }
+  }
+
+  /** The #N badge follows the SERVER rank, never the ring position. */
+  function applyRank(card, track) {
+    const rank = Math.max(1, Number(track.rank) || 1);
+    card.style.setProperty('--rank', String(rank));
+    card.classList.toggle('card--podium', rank <= 3);
+    if (card._parts && card._parts.rankBadge) {
+      card._parts.rankBadge.textContent = `#${rank}`;
+    }
+  }
+
+  /** Shared by the card label and the caption block. */
+  function playLabelFor(track, stats) {
+    const count = stats ? stats.count : NaN;
+    if (!Number.isFinite(count) || count <= 0) return '';
+    const known = track.playCount !== null && track.playCount !== undefined &&
+      track.playCount !== '' && Number.isFinite(Number(track.playCount));
+    return `${known ? '' : '~'}${count} ${count === 1 ? 'play' : 'plays'}`;
+  }
+
+  /** Play count replaces the old "played X ago" label, in the same spot. */
+  function updatePlayLabel(card, track, stats) {
+    if (!card || !card._parts || !card._parts.playLabel) return;
+    card._parts.playLabel.textContent = playLabelFor(track, stats);
+  }
+
+  /** Full credited artists: complete artist string + title "(feat. X)" names. */
+  function captionArtistsFor(track) {
+    const credited = String(track.artist || '').trim();
+    const names = [];
+    const pattern = /[\(\[]\s*(?:feat(?:uring)?|ft|with)\.?\s*([^\)\]]+)[\)\]]/gi;
+    let match;
+    while ((match = pattern.exec(String(track.track || '')))) {
+      match[1].split(/\s*(?:,|&|\band\b|\bwith\b)\s*/i).forEach((part) => {
+        const name = part.trim().replace(/^(?:feat(?:uring)?|ft)\.?\s*/i, '');
+        if (name && !names.includes(name) &&
+            !credited.toLowerCase().includes(name.toLowerCase())) names.push(name);
+      });
+    }
+    return names.length ? `${credited} (feat. ${names.join(', ')})` : credited;
+  }
+
+  /** The caption is the only place the full, untruncated text lives. */
+  function updateCaption(track, stats) {
+    if (!track) {
+      els.caption.classList.remove('is-visible', 'is-swap');
+      return;
+    }
+    const statsForTrack = stats || (state.tracks.length
+      ? computePlayStats(state.tracks).get(selectionId(track)) : null);
+    els.captionRank.textContent = `#${Math.max(1, Number(track.rank) || 1)}`;
+    els.captionPlays.textContent = playLabelFor(track, statsForTrack);
+    els.captionTitle.textContent = String(track.track || '');
+    els.captionArtists.textContent = captionArtistsFor(track);
+    els.caption.classList.remove('is-swap');
+    void els.caption.offsetWidth; // restart the text-swap animation
+    els.caption.classList.add('is-swap', 'is-visible');
   }
 
   /* ---------------------------------------------------------------- *
@@ -427,11 +634,11 @@
   }
 
   function buildCard(track, index, list, stats) {
-    const rank = track.rank || index + 1;
+    const rank = Math.max(1, Number(track.rank) || index + 1);
 
     const card = el('div', 'card');
     card.dataset.id = selectionId(track);
-    if (rank <= 3) card.classList.add('card--podium');
+    card.classList.toggle('card--podium', rank <= 3);
     card.style.setProperty('--i', index);
     card.style.setProperty('--rank', String(rank));
     card.style.setProperty('--tilt-z', `${hashString(track.track) % 7 - 3}deg`);
@@ -441,7 +648,10 @@
 
     const scaler = el('div', 'card__scaler');
     const surface = el('div', 'card__surface');
-    surface.append(el('div', 'card__glass'), el('div', 'card__tint'), el('div', 'card__gloss'));
+    surface.append(
+      el('div', 'card__glass'), el('div', 'card__tint'),
+      el('div', 'card__gloss'), el('div', 'card__fog')
+    );
     const selectedBadge = el('span', 'card__selected', 'Selected');
     selectedBadge.setAttribute('aria-hidden', 'true');
     surface.appendChild(selectedBadge);
@@ -451,6 +661,7 @@
     // --- artwork (through our proxy so the canvas stays readable) ---
     const cover = el('div', 'cover');
     const label = track.album || track.track;
+    const rankBadge = el('span', 'cover__rank', `#${rank}`);
     if (track.image) {
       const image = document.createElement('img');
       image.alt = `Artwork for ${label}`;
@@ -461,11 +672,7 @@
         catch (_) { applyTint(card, tintFromTitle(label)); } // e.g. tainted canvas
       };
       image.onerror = () => {
-        cover.replaceChildren(
-          makeGradientCover(track.track),
-          el('div', 'cover__shade'),
-          el('span', 'cover__rank', `#${rank}`)
-        );
+        cover.replaceChildren(makeGradientCover(track.track), el('div', 'cover__shade'), rankBadge);
         applyTint(card, tintFromTitle(label));
       };
       image.src = `/api/cover?u=${encodeURIComponent(track.image)}`;
@@ -475,7 +682,7 @@
       applyTint(card, tintFromTitle(label));
     }
     cover.appendChild(el('div', 'cover__shade'));
-    cover.appendChild(el('span', 'cover__rank', `#${rank}`));
+    cover.appendChild(rankBadge);
     content.appendChild(cover);
 
     // --- title / artist / small icons ---
@@ -494,23 +701,16 @@
     meta.append(labels, icons);
     content.appendChild(meta);
 
-    // --- relative time + the play count label (hidden only if unknown) ---
+    // --- play count only (the old "played X ago" label is gone) ---
+    // The now-playing dot still sits in this same discreet label slot.
     const time = el('div', track.nowPlaying ? 'card__time card__time--live' : 'card__time');
     if (track.nowPlaying) {
       const dot = el('i', 'live-dot');
       dot.setAttribute('aria-hidden', 'true');
-      time.append(dot, document.createTextNode('Now playing'));
-    } else {
-      time.textContent = relativeTime(track.playedAt);
+      time.appendChild(dot);
     }
-    const playCount = stats && stats.count;
-    let playLabel = null;
-    if (Number.isFinite(playCount) && playCount > 0) {
-      time.appendChild(document.createTextNode(' · '));
-      playLabel = el('span', 'card__plays',
-        `played ${playCount} ${playCount === 1 ? 'time' : 'times'}`);
-      time.appendChild(playLabel);
-    }
+    const playLabel = el('span', 'card__plays', '');
+    time.appendChild(playLabel);
     content.appendChild(time);
 
     // --- progress with knob, elapsed and remaining time ---
@@ -547,12 +747,14 @@
     card.appendChild(scaler);
 
     card._parts = {
-      fill, knob, elapsed, remaining, time, playLabel, tintRgb: null,
+      fill, knob, elapsed, remaining, time, playLabel, rankBadge, tintRgb: null,
       duration: durationFor(track), playedAt: track.playedAt,
-      nowPlaying: track.nowPlaying, demoProgress: track.playcount != null,
+      nowPlaying: track.nowPlaying, demoProgress: track.lastfmPlaycount != null,
       glowBase: stats ? stats.glow : 0.62,
-      playCount: playCount || 1
+      playCount: stats ? stats.count : 1,
+      theta: null
     };
+    updatePlayLabel(card, track, stats);
     return card;
   }
 
@@ -568,68 +770,135 @@
     surface.appendChild(content);
     scaler.appendChild(surface);
     card.appendChild(scaler);
-    els.deck.replaceChildren(card);
+    els.deck.replaceChildren(els.ringBack, els.personCover, els.ringFront, card);
   }
 
   function clearCardStyles() {
-    Array.from(els.deck.children).forEach((card) => {
+    Array.from(els.deck.querySelectorAll('.card')).forEach((card) => {
       card.style.transform = '';
       card.style.opacity = '';
       card.style.visibility = '';
       card.style.filter = '';
       card.style.zIndex = '';
       card.style.setProperty('--focus', '1');
+      card.style.setProperty('--fog', '1');
       if (card._parts && card._parts.glowBase) {
         card.style.setProperty('--glow', card._parts.glowBase.toFixed(3));
       }
-      card.classList.remove('is-entering');
+      card.classList.remove('is-entering', 'is-back');
     });
   }
 
+  /**
+   * /api/recent is already sorted by rank: index 0 is #1 by total play count,
+   * or the fallback (#1 repeat count, then recency) when counts are missing.
+   */
+  function findDefaultIndex(tracks) { return tracks.length ? 0 : 0; }
+
   function renderTracks(tracks, previousFirst) {
     const wasWheel = state.mode === 'wheel';
+
+    // The server already returns the tracks in RANK order (#1 first). Keep at
+    // most 24, centred on the explicit choice if one exists.
+    let list = tracks;
+    if (tracks.length > 24) {
+      const ids = tracks.map(selectionId);
+      const selectedAt = state.explicitSelection && state.selectedId
+        ? ids.indexOf(state.selectedId) : -1;
+      const start = clamp(selectedAt < 0 ? 0 : selectedAt - 12, 0, tracks.length - 24);
+      list = tracks.slice(start, start + 24);
+    }
+    tracks = list;
+
     const stats = computePlayStats(tracks);
     const ids = tracks.map(selectionId);
 
     // Keep only an EXPLICIT choice. Until the user picks a card, every refresh
-    // follows the now-playing / newest listen.
+    // follows the server's rank #1 (index 0, already fallback/recency ordered).
     let index = state.explicitSelection && state.selectedId
       ? ids.indexOf(state.selectedId) : -1;
     if (index < 0) {
       if (state.explicitSelection && state.selectedId) state.explicitSelection = false;
-      index = 0;
+      index = findDefaultIndex(tracks);
+    }
+    const followRank = wasWheel && !state.explicitSelection &&
+      ids[index] !== state.selectedId;
+
+    const oldCards = Array.from(els.deck.querySelectorAll('.card'));
+    const orderChanged = oldCards.length !== tracks.length ||
+      oldCards.some((card, i) => card.dataset.id !== ids[i]);
+
+    // A rank change reorders the ring. Capture the current angle of every card
+    // so applyWheel can ease it to the new slot instead of jumping.
+    if (wasWheel && !state.closeAt && orderChanged) {
+      const from = new Map();
+      oldCards.forEach((card) => {
+        const theta = card._parts && card._parts.theta;
+        if (Number.isFinite(theta)) from.set(card.dataset.id, theta);
+      });
+      state.reorder = { start: performance.now(), duration: 520, from };
     }
 
-    const oldCards = Array.from(els.deck.children);
-    const sameCards = oldCards.length === tracks.length &&
-      oldCards.every((card, i) => card.dataset.id === ids[i]);
-    if (sameCards) {
-      // Values arrived in the background: update in place so CSS can animate
-      // the size/glow change instead of rebuilding every card.
-      tracks.forEach((track, i) => applyPlayVars(oldCards[i], stats.get(ids[i])));
-    } else {
-      els.deck.replaceChildren(...tracks.map((track, i) =>
-        buildCard(track, i, tracks, stats.get(ids[i]))));
+    // Reuse the existing card elements: a stable data-id keeps the current
+    // selection, covers, tints and glow alive across a reshuffle.
+    const oldById = new Map(oldCards.map((card) => [card.dataset.id, card]));
+    const newCards = tracks.map((track, i) => {
+      const id = ids[i];
+      let card = oldById.get(id);
+      if (card) {
+        oldById.delete(id);
+        applyRank(card, track);
+        applyPlayVars(card, stats.get(id));
+        updatePlayLabel(card, track, stats.get(id));
+        card._parts.nowPlaying = Boolean(track.nowPlaying);
+        card._parts.playedAt = track.playedAt;
+        if (card._parts.time) {
+          card._parts.time.classList.toggle('card__time--live', Boolean(track.nowPlaying));
+        }
+        return card;
+      }
+      return buildCard(track, i, tracks, stats.get(id));
+    });
+    if (orderChanged) {
+      // replaceChildren MOVES the reused nodes (identity, styles and covers are
+      // preserved) and drops any old skeleton / removed track in one step.
+      els.deck.replaceChildren(els.ringBack, els.personCover, els.ringFront, ...newCards);
     }
+    syncRingFx(newCards);
 
     state.tracks = tracks;
     state.selectedId = ids[index];
     state.frontIndex = index;
-    Array.from(els.deck.children).forEach((card, i) => {
+    newCards.forEach((card, i) => {
       card.classList.toggle('is-selected', i === index);
       card.classList.remove('is-front');
     });
+    updateCaption(tracks[index], stats.get(ids[index]));
 
     state.step = tracks.length > 1 ? 360 / tracks.length : 0;
     computeRadius();
-    state.rotation = index * state.step;
-    state.velocity = 0;
-    state.target = null;
-    state.snapAt = 0;
+    if (followRank) {
+      // A new #1 arrived while the user had not chosen anything: rotate to it
+      // by the shortest path instead of jumping the whole ring.
+      const target = index * state.step;
+      state.target = target + Math.round((state.rotation - target) / 360) * 360;
+      state.velocity = 0;
+      state.snapAt = 0;
+      startLoop();
+    } else {
+      // Keep the selected poster at θ = 0 while the other posters ease into the
+      // new rank order. stepTo() still finds the shortest path afterwards.
+      state.rotation = index * state.step;
+      state.velocity = 0;
+      state.target = null;
+      state.snapAt = 0;
+    }
+    if (state.debugOn) printDebug();
 
     // A newly scrobbled track slides in at the front.
-    if (previousFirst && trackKey(tracks[0]) !== previousFirst && !wasWheel && !sameCards) {
-      els.deck.firstElementChild.classList.add('is-new');
+    if (previousFirst && trackKey(tracks[0]) !== previousFirst && !wasWheel && orderChanged) {
+      const firstCard = els.deck.querySelector('.card');
+      if (firstCard) firstCard.classList.add('is-new');
     }
 
     if (wasWheel) applyWheel();
@@ -641,90 +910,315 @@
   }
 
   /* ---------------------------------------------------------------- *
-   * The virtualised 3D wheel
+   * The Saturn ring: a banked, perspective-projected ellipse
    * ---------------------------------------------------------------- */
-  function computeRadius() {
-    const stage = els.stage.getBoundingClientRect();
-    const stageH = stage.height || 600;
-    const stageW = stage.width || stageH * 0.562829665;
-    // --card-h / --card-w already include --card-scale; do not apply it twice.
-    const width = els.deck.offsetWidth || stageH * 0.23;
-    const count = state.tracks.length;
-    // Keep about one card-width of clearance between neighbours. The ring
-    // widens as the list grows, so 20 posters fan out instead of piling up
-    // on top of each other; the ones further back simply leave the stage.
-    const spacing = width * 1.06;
-    const ideal = count > 1
-      ? spacing / (2 * Math.sin(Math.PI / count))
-      : width * 0.5;
-    // Safety cap only: it must never be what makes cards overlap.
-    const maxRadius = stageW * 2;
-    state.radius = Math.max(0, Math.min(ideal, maxRadius) * state.radiusScale);
-    root.style.setProperty('--radius', `${Math.round(state.radius)}px`);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const easeInOut = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const smoothstep = (a, b, value) => {
+    const t = clamp((value - a) / (b - a), 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+  const CARD_RATIO = 0.642857143; // 9:14 upright poster
+  const MIN_PERSPECTIVE_SCALE = 0.32;
+
+  /** p = f/(f-z), normalized so the near point z=+1 gives exactly 1. */
+  function perspectiveScale(z, f) {
+    return clamp((f - 1) / (f - z), MIN_PERSPECTIVE_SCALE, 1);
   }
 
-  function applyWheel() {
-    const cards = els.deck.children;
+  /** One shared projection for cards, ring line and band. Depth stays θ-only. */
+  function projectRing(theta, cfg, ryScale = 1) {
+    const { cx, cy, rx, ry, rollRad, perspective } = cfg;
+    const z = Math.cos(theta);
+    const s = perspectiveScale(z, perspective);
+    const x0 = rx * Math.sin(theta) * s;
+    const y0 = ry * ryScale * z * (0.6 + 0.4 * s);
+    const cosR = Math.cos(rollRad);
+    const sinR = Math.sin(rollRad);
+    return {
+      x: cx + x0 * cosR - y0 * sinR,
+      y: cy + x0 * sinR + y0 * cosR,
+      z, s
+    };
+  }
+
+  /** Bounding box of the posters on the rolled ring, at their largest (front). */
+  function measureRing(cfg, cardW, cardH) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const steps = 72;
+    for (let i = 0; i < steps; i++) {
+      const p = projectRing(i * 2 * Math.PI / steps, cfg);
+      const halfW = cardW * RING_FRONT_SCALE / 2;
+      minX = Math.min(minX, p.x - halfW);
+      maxX = Math.max(maxX, p.x + halfW);
+      minY = Math.min(minY, p.y - cardH * RING_FRONT_SCALE);
+      maxY = Math.max(maxY, p.y);
+    }
+    return { minX, maxX, minY, maxY };
+  }
+
+  /**
+   * Ring centre = phone anchor. The base size is derived from the projected gap
+   * between the front neighbours; the front is then scaled up and the back down
+   * (see RING_*_SCALE) so the ring reads with real depth. rx is reduced only if
+   * the rolled ring overflows.
+   */
+  function computeRadius() {
+    const stage = els.stage.getBoundingClientRect();
+    const w = stage.width || els.stage.clientWidth || 400;
+    const h = stage.height || els.stage.clientHeight || 700;
+    const cx = w * state.anchor.x / 100;
+    const baseCy = h * state.anchor.y / 100 + state.ringCyOffset;
+    const rollRad = state.ringRoll * Math.PI / 180;
+    const ry = Math.max(1, h * state.ringRy / 100 * state.ringTilt);
+    const f = state.perspective;
+    const count = Math.max(1, state.tracks.length);
+    const margin = Math.max(4, Math.min(w, h) * 0.012);
+    const stepAngle = count > 1 ? 2 * Math.PI / count : 0;
+
+    let rx = Math.max(1, w * state.ringRx / 100);
+    let cfg, cardW, cardH, bbox;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      // Keep the front card's bottom near 62-68% of the stage.
+      const frontY0 = baseCy + ry * Math.cos(rollRad);
+      const targetBottom = h * (state.anchor.y / 100 + 0.10);
+      const cy = baseCy + clamp(targetBottom - frontY0, 0, h * 0.08);
+      cfg = { w, h, cx, cy, rx, ry, rollRad, perspective: f };
+
+      // Gap-based base size. RING_FRONT_WIDTH is the *effective* front width
+      // after scaling, so front neighbours keep a small gap while the front
+      // poster is noticeably bigger than the back ones.
+      const a = projectRing(0, cfg);
+      const b = projectRing(stepAngle, cfg);
+      const frontSpacing = count > 1
+        ? Math.hypot(b.x - a.x, b.y - a.y) : rx;
+      cardW = clamp(
+        frontSpacing * RING_FRONT_WIDTH / RING_FRONT_SCALE * state.ringCardScale,
+        w * 0.045, h * 0.18 * state.ringCardScale
+      );
+      cardH = cardW / CARD_RATIO;
+
+      bbox = measureRing(cfg, cardW, cardH);
+      const fits = bbox.minX >= margin && bbox.maxX <= w - margin &&
+        bbox.minY >= margin && bbox.maxY <= h - margin;
+      if (fits) break;
+
+      // Vertical overflow is fixed by lifting the ellipse; horizontal overflow
+      // by reducing rx (which also reduces the spacing-based card size).
+      if (bbox.maxY > h - margin) {
+        cfg.cy -= bbox.maxY - (h - margin);
+        bbox = measureRing(cfg, cardW, cardH);
+        if (bbox.minX >= margin && bbox.maxX <= w - margin &&
+            bbox.minY >= margin && bbox.maxY <= h - margin) break;
+      }
+      rx *= 0.94;
+    }
+
+    const autoPush = cfg.cy - baseCy;
+    state.ring = {
+      w, h, cx, cy: cfg.cy, baseCy, rx, ry,
+      roll: state.ringRoll, rollRad, perspective: f,
+      autoPush, cardW, cardH, bbox
+    };
+    root.style.setProperty('--radius', '0px'); // phone card never gets Z push-back
+    root.style.setProperty('--ring-card-w', `${cardW.toFixed(1)}px`);
+    root.style.setProperty('--ring-card-h', `${cardH.toFixed(1)}px`);
+    root.style.setProperty(
+      '--ring-cy-offset', `${(state.ringCyOffset + autoPush).toFixed(0)}px`
+    );
+    updateRingGeometry();
+    updateFrontBoost();
+  }
+
+  /**
+   * The front poster grows upward from its ring point. Cap the requested
+   * --front-boost so its scaled top edge never rises above the phone anchor;
+   * nothing else in the layout is moved.
+   */
+  function frontBoostLimit() {
+    if (!state.ring.w || !state.ring.cardH) return state.frontBoost;
+    const front = projectRing(0, state.ring);
+    const phoneY = state.ring.h * state.anchor.y / 100;
+    // The phone card stands on that anchor: its top edge is one card-height
+    // above it (plus the 1% deck offset used by the CSS).
+    const phoneTop = phoneY - state.ring.h * 0.01 -
+      state.ring.h * 0.36 * state.cardScale;
+    const room = front.y - phoneTop;
+    // The final front scale is frontBoost (the projection s is divided out of
+    // SIZE only). Keep the historical 1.12 safety margin for any future boost,
+    // so the top edge can never rise into the phone.
+    const limit = room / (state.ring.cardH * 1.12);
+    return clamp(limit, 1, state.frontBoost);
+  }
+
+  function updateFrontBoost() {
+    state.effectiveFrontBoost = frontBoostLimit();
+    root.style.setProperty('--front-boost', state.effectiveFrontBoost.toFixed(3));
+  }
+
+  /** Sample the same projection for both half-ellipses and their inner bands. */
+  function ringArc(cfg, from, to, ryScale = 1, steps = 56) {
+    let d = '';
+    for (let i = 0; i <= steps; i++) {
+      const p = projectRing(from + (to - from) * i / steps, cfg, ryScale);
+      d += `${i ? ' L' : 'M'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+    }
+    return d;
+  }
+
+  /** Back half is θ ∈ [π/2, 3π/2]; front half is θ ∈ [-π/2, π/2]. */
+  function updateRingGeometry() {
+    const { w, h } = state.ring;
+    const f = (n) => n.toFixed(1);
+    for (const svg of [els.ringBack, els.ringFront]) {
+      svg.setAttribute('viewBox', `0 0 ${f(w)} ${f(h)}`);
+    }
+    const backLine = ringArc(state.ring, Math.PI / 2, Math.PI * 1.5);
+    const backInner = ringArc(state.ring, Math.PI * 1.5, Math.PI / 2, 0.78);
+    const frontLine = ringArc(state.ring, -Math.PI / 2, Math.PI / 2);
+    const frontInner = ringArc(state.ring, Math.PI / 2, -Math.PI / 2, 0.78);
+    els.ringBack._parts.band.setAttribute('d', `${backLine} ${backInner} Z`);
+    els.ringBack._parts.line.setAttribute('d', backLine);
+    els.ringFront._parts.band.setAttribute('d', `${frontLine} ${frontInner} Z`);
+    els.ringFront._parts.line.setAttribute('d', frontLine);
+  }
+
+  /**
+   * θ = 0 is the near point (bottom of the ellipse, in front of the person);
+   * θ = π is the far point. Cards stay upright and anchored on the ring, but
+   * scale smoothly with depth so the front posters are larger than the back.
+   */
+  function applyWheel(now = performance.now()) {
+    const cards = Array.from(els.deck.querySelectorAll('.card'));
     const count = cards.length;
     if (!count) return;
 
-    if (count === 1) {
-      const only = cards[0];
-      only.style.transform = `translateZ(${state.radius}px)`;
-      only.style.visibility = 'visible';
-      only.style.opacity = '1';
-      only.style.filter = 'none';
-      only.style.setProperty('--focus', '1');
-      only.classList.add('is-front');
-      state.frontIndex = 0;
-      els.counter.textContent = '1 / 1';
-      updateSceneTint();
-      return;
-    }
+    const { w, h, cx, cy, cardW, cardH, roll } = state.ring;
+    const frontRaw = count > 1 ? state.rotation / state.step : 0;
+    state.frontIndex = ((Math.round(frontRaw) % count) + count) % count;
+    const stepRad = state.step * Math.PI / 180;
+    const phoneX = cx;
+    const phoneY = h * state.anchor.y / 100 - h * 0.01;
 
-    // Only ~11 cards near the front are painted; the rest are virtualised.
-    const frontRaw = state.rotation / state.step;
-    const nearest = Math.round(frontRaw);
-    const offset = frontRaw - nearest;
-    const half = Math.min(5, Math.floor((count - 1) / 2));
-    state.frontIndex = ((nearest % count) + count) % count;
+    const entering = !!state.enterStart && !reduceMotion;
+    const exiting = !!state.closeAt && !reduceMotion;
+    const reorder = state.reorder;
+    const reorderT = reorder
+      ? clamp((now - reorder.start) / reorder.duration, 0, 1) : 1;
+    const reorderEase = easeInOut(reorderT);
+    let finishedEnter = false;
+    let finishedExit = false;
 
     for (let i = 0; i < count; i++) {
       const card = cards[i];
-      let delta = ((i - nearest) % count + count) % count;
-      if (delta > count / 2) delta -= count;
-      const distance = Math.abs(delta - offset);
-
-      if (Math.abs(delta) > half + 1) {
-        card.style.visibility = 'hidden';
-        card.style.opacity = '0';
-        card.classList.remove('is-front');
-        continue;
+      // θ = base + i·(2π/n), with base = -rotation so advancing the rotation
+      // brings the next (higher-index) card to θ = 0 at the near point.
+      let theta = (i - frontRaw) * stepRad;
+      // A rank change reshuffles the slots; ease each poster from the angle it
+      // had before the reshuffle to its new one (shortest way round).
+      if (reorder && reorderT < 1 && card._parts) {
+        const from = reorder.from.get(card.dataset.id);
+        if (Number.isFinite(from)) {
+          const shortest = Math.atan2(Math.sin(theta - from), Math.cos(theta - from));
+          theta = from + shortest * reorderEase;
+        }
       }
-      const angle = (delta - offset) * state.step;
-      const ratio = Math.min(1, distance / (half + 0.5));
-      const focus = 1 - ratio;
-      const isFront = distance < 0.08;
-      const isSelected = card.dataset.id === state.selectedId;
-      const crisp = isFront || isSelected;
+      if (card._parts) card._parts.theta = theta;
+      const p = projectRing(theta, state.ring);
+      const d = (p.z + 1) / 2; // depth stays θ-only, never affected by roll
+      const finalX = p.x;
+      const finalY = p.y;
+
+      // Uniform poster size: depth and play count no longer change scale.
+      // The perspective s still drives positions; it is divided out of SIZE so
+      // every card keeps exactly the same dimensions on the ring.
+      // The debug sliders remain live if a depth curve is wanted again.
+      const depthScale = lerp(state.backShrink, state.effectiveFrontBoost,
+        smoothstep(0, 1, d));
+      const scale = (p.s / p.s) * depthScale;
+      let opacity = clamp(lerp(0.35, 1, d), 0.35, 1);
+      let x = finalX;
+      let y = finalY;
+
+      // Staggered fly-out: the front card leaves the phone first, the rest
+      // follow 30 ms apart along the tilted ellipse. Reverse on collapse.
+      if (entering) {
+        const delay = ((i - state.frontIndex + count) % count) * 30;
+        const t = clamp((now - state.enterStart - delay) / 520, 0, 1);
+        const e = easeOut(t);
+        x = lerp(phoneX, finalX, e);
+        y = lerp(phoneY, finalY, e);
+        opacity *= e;
+        if (now - state.enterStart > (count - 1) * 30 + 520) finishedEnter = true;
+      } else if (exiting) {
+        const t = clamp((now - state.closeAt) / 480, 0, 1);
+        const e = easeInOut(t);
+        x = lerp(finalX, phoneX, e);
+        y = lerp(finalY, phoneY, e);
+        if (card.dataset.id !== state.selectedId) opacity *= (1 - e);
+        if (t >= 1) finishedExit = true;
+      }
+
+      const blur = lerp(2, 0, d);
+      const brightness = lerp(0.6, 1, d);
+      const saturation = lerp(0.7, 1, d);
+      const fog = d;
       const glowBase = card._parts && card._parts.glowBase
         ? card._parts.glowBase : 0.62;
+      const nearAngle = Math.abs(Math.atan2(Math.sin(theta), Math.cos(theta)));
+      const isFront = count === 1 || nearAngle < stepRad * 0.35;
 
       card.style.visibility = 'visible';
-      card.style.transform = `rotateY(${angle.toFixed(2)}deg) translateZ(${state.radius}px)`;
-      card.style.opacity = crisp ? '1' : Math.max(0.72, 1 - ratio * 0.28).toFixed(3);
-      // Keep the existing wheel blur, but never darken past the readability floor.
-      card.style.filter = crisp ? 'none'
-        : `blur(${(ratio * 2.4).toFixed(2)}px) brightness(${Math.max(0.8, 1 - ratio * 0.2).toFixed(2)})`;
-      card.style.setProperty('--focus', focus.toFixed(2));
-      // Multiplicative with the wheel focus, clamped to the same 0.25 floor.
-      card.style.setProperty('--glow',
-        Math.max(0.25, glowBase * (0.62 + 0.38 * focus)).toFixed(3));
-      card.style.zIndex = String(100 - Math.round(distance * 2));
+      card.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${scale.toFixed(3)})`;
+      card.style.opacity = opacity.toFixed(3);
+      card.style.filter =
+        `blur(${blur.toFixed(2)}px) brightness(${brightness.toFixed(2)}) ` +
+        `saturate(${saturation.toFixed(2)})`;
+      card.style.zIndex = String(Math.round(d * 1000));
+      card.style.setProperty('--focus', (0.35 + 0.65 * d).toFixed(2));
+      card.style.setProperty('--fog', fog.toFixed(3));
+      card.style.setProperty('--glow', Math.max(0.25, glowBase * (0.55 + 0.45 * d)).toFixed(3));
       card.classList.toggle('is-front', isFront);
+      card.classList.toggle('is-back', d < 0.5);
+
+      // Ring-plane marks: dark contact shadow + tinted reflection, front half
+      // only. Both follow the same rolled point as the poster bottom.
+      if (card._parts && card._parts.fx) {
+        const near = clamp((d - 0.5) / 0.5, 0, 1);
+        const { shadow, reflection } = card._parts.fx;
+        const show = near > 0.01;
+        shadow.style.display = show ? '' : 'none';
+        reflection.style.display = show ? '' : 'none';
+        if (show) {
+          const sx = x.toFixed(1), sy = y.toFixed(1);
+          const rotate = `rotate(${roll.toFixed(1)} ${sx} ${sy})`;
+          shadow.setAttribute('cx', sx);
+          shadow.setAttribute('cy', sy);
+          shadow.setAttribute('rx', (cardW * scale * 0.55).toFixed(1));
+          shadow.setAttribute('ry', (cardH * scale * 0.10).toFixed(1));
+          shadow.setAttribute('transform', rotate);
+          shadow.setAttribute('opacity', (near * 0.30).toFixed(3));
+
+          const rgb = card._parts.tintRgb || '120, 150, 210';
+          reflection.setAttribute('cx', sx);
+          reflection.setAttribute('cy', (y + cardH * scale * 0.02).toFixed(1));
+          reflection.setAttribute('rx', (cardW * scale * 0.48).toFixed(1));
+          reflection.setAttribute('ry', (cardH * scale * 0.055).toFixed(1));
+          reflection.setAttribute('transform', rotate);
+          reflection.setAttribute('fill', `rgba(${rgb}, ${(near * 0.16).toFixed(3)})`);
+        }
+      }
     }
+
     els.counter.textContent = `${state.frontIndex + 1} / ${count}`;
     updateSceneTint();
+    if (reorder && reorderT >= 1) state.reorder = null;
+    if (finishedEnter) {
+      state.enterStart = 0;
+      cards.forEach((card) => card.classList.remove('is-entering'));
+    }
+    if (finishedExit) finishClose();
   }
 
   function snapToNearest() {
@@ -738,6 +1232,7 @@
   }
 
   function stepTo(index) {
+    state.reorder = null; // user input wins over a rank reshuffle
     if (state.mode !== 'wheel') openWheel();
     if (!state.step) { state.target = 0; return; }
     const count = state.tracks.length;
@@ -771,14 +1266,22 @@
         state.snapAt = 0;
       }
     }
-    applyWheel();
-    state.raf = requestAnimationFrame(frame);
+    applyWheel(now);
+    // applyWheel may finish the fly-back and switch to phone mode.
+    state.raf = state.mode === 'wheel' ? requestAnimationFrame(frame) : null;
   }
 
   function startLoop() { if (!state.raf) state.raf = requestAnimationFrame(frame); }
   function stopLoop() { if (state.raf) cancelAnimationFrame(state.raf); state.raf = null; }
 
   function openWheel() {
+    // Reopening while the fly-back is still running simply reverses it.
+    if (state.closeAt) {
+      state.closeAt = 0;
+      state.enterStart = performance.now();
+      startLoop();
+      return;
+    }
     if (state.mode === 'wheel' || !state.tracks.length) return;
     state.mode = 'wheel';
     document.body.classList.remove('is-loading');
@@ -789,24 +1292,32 @@
     // Reopen at whatever the user selected, not necessarily the newest listen.
     const selected = findSelectedIndex();
     state.selectedId = selectionId(state.tracks[selected]);
-    Array.from(els.deck.children).forEach((card, i) => {
+    Array.from(els.deck.querySelectorAll('.card')).forEach((card, i) => {
       card.classList.toggle('is-selected', i === selected);
-      if (i > 0) card.classList.add('is-entering');
+      card.classList.add('is-entering');
     });
     state.rotation = selected * state.step;
     state.target = null;
     state.velocity = 0;
     state.snapAt = 0;
-    window.setTimeout(() => {
-      Array.from(els.deck.children).forEach((card) => card.classList.remove('is-entering'));
-    }, 900);
+    state.enterStart = performance.now();
     startLoop();
   }
 
   function closeWheel() {
-    if (state.mode !== 'wheel') return;
+    if (state.mode !== 'wheel' || state.closeAt) return;
     // The visible front card is the choice we collapse to.
     if (state.tracks.length) setSelected(state.frontIndex);
+    state.target = null;
+    state.velocity = 0;
+    state.snapAt = 0;
+    if (reduceMotion || !state.tracks.length) { finishClose(); return; }
+    // Keep the ring alive for the reverse animation; applyWheel ends it.
+    state.closeAt = performance.now();
+    startLoop();
+  }
+
+  function finishClose() {
     state.mode = 'phone';
     document.body.classList.remove('is-wheel');
     els.backButton.hidden = true;
@@ -815,8 +1326,12 @@
     state.velocity = 0;
     state.target = null;
     state.snapAt = 0;
+    state.closeAt = 0;
+    state.enterStart = 0;
     clearCardStyles();
-    Array.from(els.deck.children).forEach((card) => card.classList.remove('is-front'));
+    Array.from(els.deck.querySelectorAll('.card')).forEach((card) => {
+      card.classList.remove('is-front', 'is-entering');
+    });
     if (state.tracks.length) {
       els.counter.textContent = `${findSelectedIndex() + 1} / ${state.tracks.length}`;
     }
@@ -824,9 +1339,9 @@
   }
 
   function frontCard() {
-    const cards = Array.from(els.deck.children);
+    const cards = Array.from(els.deck.querySelectorAll('.card'));
     if (!cards.length) return null;
-    if (state.mode === 'wheel') return cards[state.frontIndex] || null;
+    if (state.mode === 'wheel' || state.closeAt) return cards[state.frontIndex] || null;
     return cards.find((card) => card.dataset.id === state.selectedId) || cards[0] || null;
   }
 
@@ -837,13 +1352,20 @@
     if (button) button.innerHTML = state.paused ? ICONS.play : ICONS.pause;
   }
 
-  /** A real tap on any visible card: rotate to it, or collapse if it is front. */
+  /** A real click: select the card, rotate it to the front, or collapse if it
+   *  is already the front one. Selection is by data-id, never by a stale index. */
   function selectCard(card) {
-    if (!card || card.style.visibility === 'hidden') return;
-    if (state.mode !== 'wheel') { openWheel(); return; }
-    const index = Array.prototype.indexOf.call(els.deck.children, card);
+    if (!card || !card.dataset || !card.dataset.id) return;
+    const cards = Array.from(els.deck.querySelectorAll('.card'));
+    const index = cards.indexOf(card);
     if (index < 0) return;
-    if (index === state.frontIndex) closeWheel();
+    if (state.debugOn) console.log('[debug][click] data-id =', card.dataset.id);
+    if (state.mode !== 'wheel') {
+      setSelected(index);
+      openWheel();
+      return;
+    }
+    if (card.classList.contains('is-front')) closeWheel();
     else stepTo(index);
   }
 
@@ -862,90 +1384,121 @@
       target.closest('.topbar, .hint, .back, .banner, .debug, .debug-overlay, .state-card'));
   }
 
+  /**
+   * Topmost card under a screen point. Decorative layers have pointer-events:
+   * none, but elementsFromPoint can still report them — walking up to [data-id]
+   * and taking the highest z-index makes overlapping cards resolve correctly.
+   */
+  function cardAtPoint(clientX, clientY) {
+    const stack = document.elementsFromPoint(clientX, clientY);
+    let best = null;
+    let bestZ = -Infinity;
+    for (const node of stack) {
+      const card = node.closest && node.closest('.card[data-id]');
+      if (!card || !els.deck.contains(card)) continue;
+      const z = Number(card.style.zIndex) || 0;
+      if (z > bestZ) { bestZ = z; best = card; }
+    }
+    return best;
+  }
+
   function bindInput() {
     let wheelCooldown = 0;
-    els.stage.addEventListener('wheel', (event) => {
+    let press = null;
+
+    // The page is fixed, so a wheel event anywhere opens / spins the ring.
+    window.addEventListener('wheel', (event) => {
       if (!state.tracks.length || isSceneUI(event.target)) return;
       event.preventDefault();
       openWheel();
       state.target = null;
-      // Throttle trackpads a little so a single flick is not 40 events.
       const now = performance.now();
       if (now - wheelCooldown < 16) return;
       wheelCooldown = now;
-      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      const raw = event.deltaY + event.deltaX;
+      const delta = event.deltaMode === 1 ? raw * 16 : raw;
       state.velocity = clamp(state.velocity + delta * 0.05, -24, 24);
       state.snapAt = now + 180;
-      // A tap during the momentum tail must not select a card.
-      state.suppressClickUntil = now + 350;
+      state.suppressClickUntil = now + 350; // momentum must never click a card
       moveGloss(event.clientX);
     }, { passive: false });
 
+    // NO pointer capture here: capturing on pointerdown retargets the eventual
+    // click away from the poster the user actually pressed.
     els.stage.addEventListener('pointerdown', (event) => {
       moveGloss(event.clientX);
-      if (!state.tracks.length || isSceneUI(event.target) || event.target.closest('.control')) return;
+      if (!state.tracks.length || isSceneUI(event.target)) return;
       if (event.button !== undefined && event.button !== 0) return;
       if (event.isPrimary === false) return;
-      state.press = {
-        card: event.target.closest('.card'),
-        x: event.clientX, y: event.clientY,
-        t: performance.now(), moved: false, pointerId: event.pointerId
+      if (event.target.closest && event.target.closest('.control')) return;
+      state.reorder = null; // user input wins over a rank reshuffle
+      const now = performance.now();
+      press = {
+        id: event.pointerId,
+        startX: event.clientX, startY: event.clientY,
+        lastX: event.clientX, lastT: now, t: now,
+        card: cardAtPoint(event.clientX, event.clientY),
+        dragging: false, captured: false
       };
-      try { els.stage.setPointerCapture(event.pointerId); } catch (_) { /* older browser */ }
-      state.dragging = true;
-      state.moved = false;
-      state.dragStartX = event.clientX;
-      state.lastX = event.clientX;
-      state.lastT = performance.now();
+      state.press = press;
+      state.dragging = false;
       state.target = null;
     });
 
-    els.stage.addEventListener('pointermove', (event) => {
+    // Only horizontal movement turns into a drag; vertical gestures are left
+    // to the page (touch-action: pan-y on the ring).
+    window.addEventListener('pointermove', (event) => {
       moveGloss(event.clientX);
-      if (state.press && !state.press.moved) {
-        const dx = event.clientX - state.press.x;
-        const dy = event.clientY - state.press.y;
-        if (Math.hypot(dx, dy) > 6) state.press.moved = true;
-      }
-      if (!state.dragging) return;
-      const deltaX = event.clientX - state.lastX;
-      const now = performance.now();
-      if (Math.abs(event.clientX - state.dragStartX) > 6) {
-        state.moved = true;
+      if (!press || event.pointerId !== press.id) return;
+      if (!press.dragging && Math.abs(event.clientX - press.startX) > 6) {
+        press.dragging = true;
+        state.dragging = true;
+        document.body.classList.add('is-dragging');
+        // Capture only after the drag threshold is crossed.
+        try { els.stage.setPointerCapture(event.pointerId); press.captured = true; }
+        catch (_) { /* older browser */ }
         openWheel();
       }
+      if (!press.dragging) return;
+      const deltaX = event.clientX - press.lastX;
+      const now = performance.now();
       if (state.mode === 'wheel') {
-        const change = deltaX * 0.32;
-        state.rotation += change;
-        const elapsed = Math.max(8, now - state.lastT);
-        state.velocity = clamp(change * (16 / elapsed) * 0.9 + state.velocity * 0.1, -30, 30);
+        state.rotation += deltaX * 0.32;
+        const elapsed = Math.max(8, now - press.lastT);
+        state.velocity = clamp(deltaX * (16 / elapsed) * 0.9 + state.velocity * 0.1, -30, 30);
+        state.target = null;
       }
-      state.lastX = event.clientX;
-      state.lastT = now;
+      press.lastX = event.clientX;
+      press.lastT = now;
     });
 
-    function endDrag(event) {
-      if (event && event.isPrimary === false) return;
-      if (!state.dragging) return;
-      const press = state.press;
-      const now = performance.now();
-      state.dragging = false;
+    function endPointer(event, cancelled) {
+      if (!press || event.pointerId !== press.id) return;
+      const p = press;
+      press = null;
       state.press = null;
-      if (press) {
-        try { els.stage.releasePointerCapture(press.pointerId); } catch (_) { /* already gone */ }
+      state.dragging = false;
+      document.body.classList.remove('is-dragging');
+      if (p.captured) {
+        try { els.stage.releasePointerCapture(p.pointerId); } catch (_) { /* already gone */ }
       }
-
-      const isTap = press && press.card && !press.moved &&
-        now - press.t < 250 && now >= state.suppressClickUntil;
-      if (isTap) selectCard(press.card);
-      else if (press && press.moved) state.suppressClickUntil = now + 300;
-
-      if (state.mode === 'wheel') state.snapAt = performance.now() + 120;
-      else if (state.moved) openWheel();
+      const now = performance.now();
+      if (!p.dragging && !cancelled && now - p.t < 300 && now >= state.suppressClickUntil) {
+        // Re-check at pointerup: if neighbours overlap, cardAtPoint picks the
+        // one with the highest z-index (the poster actually on top). Releasing
+        // outside every card intentionally selects nothing.
+        const hit = cardAtPoint(event.clientX, event.clientY);
+        if (state.debugOn) console.log('[debug][hit-test] data-id =', hit ? hit.dataset.id : null);
+        if (hit) selectCard(hit);
+      }
+      if (p.dragging) {
+        state.suppressClickUntil = now + 350;
+        if (state.mode === 'wheel') state.snapAt = now + 120;
+      }
       if (reduceMotion) { state.velocity = 0; snapToNearest(); }
     }
-    els.stage.addEventListener('pointerup', endDrag);
-    els.stage.addEventListener('pointercancel', endDrag);
+    window.addEventListener('pointerup', (event) => endPointer(event, false));
+    window.addEventListener('pointercancel', (event) => endPointer(event, true));
 
     window.addEventListener('keydown', (event) => {
       if (!state.tracks.length) return;
@@ -971,7 +1524,7 @@
     window.addEventListener('resize', () => {
       if (state.tracks.length) {
         computeRadius();
-        if (state.mode === 'wheel') applyWheel();
+        if (state.mode === 'wheel') applyWheel(performance.now());
       }
     });
   }
@@ -1031,7 +1584,6 @@
       seconds = ((Date.now() - state.nowPlayingStart) / 1000) % parts.duration;
     } else {
       seconds = Math.min(parts.duration, Math.max(0, (Date.now() - Date.parse(parts.playedAt)) / 1000));
-      parts.time.textContent = relativeTime(parts.playedAt);
     }
 
     const percent = `${(seconds / parts.duration * 100).toFixed(2)}%`;

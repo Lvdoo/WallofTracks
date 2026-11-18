@@ -52,7 +52,18 @@
       </div>
     </header>
 
-    <p class="hint" id="hint">Scroll, swipe or use ← → to explore the ranking</p>
+    <p class="hint" id="hint">Scroll anywhere or swipe to see the Saturn ring · ← → also work</p>
+
+    <!-- Full, untruncated details of the selected track. Never a click target. -->
+    <figure class="caption" id="caption" aria-live="polite">
+      <div class="caption__meta">
+        <span class="caption__rank" id="captionRank">#1</span>
+        <span class="caption__plays" id="captionPlays"></span>
+      </div>
+      <figcaption class="caption__title caption__text" id="captionTitle"></figcaption>
+      <div class="caption__artists caption__text" id="captionArtists"></div>
+    </figure>
+
     <button class="back" id="backButton" type="button" hidden>↩ Back to phone</button>
 
     <div class="banner" id="banner" hidden>
@@ -60,18 +71,52 @@
       <button type="button" id="retryButton">Retry</button>
     </div>
 
-    <!-- ?debug=1: click/drag the photo, tune scale and wheel radius. -->
+    <!-- ?debug=1: tune the photo anchor, the Saturn ring and hit areas. -->
     <aside class="debug" id="debugPanel" hidden>
-      <strong>Photo integration debug</strong>
-      <p>Click or drag on the photo to place the phone anchor.</p>
+      <strong>Photo + ring debug</strong>
+      <p>Cards stay clickable. Tick “Pick anchor” only when you want to click or drag the photo.</p>
       <code id="debugValues"></code>
       <label class="debug__row">
         <span>Card scale <output id="scaleOut">1.00</output></span>
         <input id="scaleSlider" type="range" min="0.5" max="1.6" step="0.05" value="1">
       </label>
       <label class="debug__row">
-        <span>Wheel radius <output id="radiusOut">1.00×</output></span>
-        <input id="radiusSlider" type="range" min="0.5" max="2" step="0.05" value="1">
+        <span>Ring radius X <output id="ringRxOut">52%</output></span>
+        <input id="ringRxSlider" type="range" min="20" max="60" step="1" value="52">
+      </label>
+      <label class="debug__row">
+        <span>Ring roll <output id="ringRollOut">-9°</output></span>
+        <input id="ringRollSlider" type="range" min="-30" max="30" step="1" value="-9">
+      </label>
+      <label class="debug__row">
+        <span>Ring tilt <output id="ringTiltOut">1.00×</output></span>
+        <input id="ringTiltSlider" type="range" min="0.4" max="1.8" step="0.05" value="1">
+      </label>
+      <label class="debug__row">
+        <span>Perspective <output id="perspectiveOut">2.20</output></span>
+        <input id="perspectiveSlider" type="range" min="1.2" max="5" step="0.05" value="2.2">
+      </label>
+      <label class="debug__row">
+        <span>Ring Y offset <output id="ringCyOut">0px</output></span>
+        <input id="ringCySlider" type="range" min="-80" max="80" step="1" value="0">
+      </label>
+      <label class="debug__row">
+        <span>Ring card size <output id="ringCardOut">1.00×</output></span>
+        <input id="ringCardSlider" type="range" min="0.6" max="1.5" step="0.05" value="1">
+      </label>
+      <label class="debug__row">
+        <span>Front boost <output id="frontBoostOut">1.00</output></span>
+        <input id="frontBoostSlider" type="range" min="1" max="2" step="0.05" value="1">
+      </label>
+      <label class="debug__row">
+        <span>Back shrink <output id="backShrinkOut">1.00</output></span>
+        <input id="backShrinkSlider" type="range" min="0.3" max="1" step="0.05" value="1">
+      </label>
+      <label class="debug__check">
+        <input id="anchorPick" type="checkbox"> Pick phone anchor
+      </label>
+      <label class="debug__check">
+        <input id="hitOutline" type="checkbox"> Show card hit areas
       </label>
     </aside>
     <div class="debug-overlay" id="debugOverlay" hidden></div>

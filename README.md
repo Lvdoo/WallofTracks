@@ -4,9 +4,12 @@ A single page that turns your 20 most recent distinct Last.fm sounds into GIANT,
 "Now Playing" poster cards that look like physical objects inside a photo of
 you. The card rises out of the flat phone. Your most-played track is the biggest
 and the brightest; quieter ones stay smaller and dimmer, but always readable.
-Scroll, swipe or press the arrow keys and it becomes a 3D wheel of your recent
-listens; click any visible card to select it — the Instagram/Pinterest
-"floating music player card" look, made with CSS 3D transforms.
+Scroll anywhere on the page (vertical swipe on mobile, trackpad, mouse wheel) or
+press the arrow keys and your recent listens form a banked, perspective-projected
+Saturn ring of upright posters around the phone/waist height; click any poster to
+select it and rotate it to the front — the Instagram/Pinterest "floating music
+player card" look, with the ring projected in JavaScript and the cards kept
+perfectly upright.
 
 Everything is deliberately simple: Node.js + Express on the server, plain
 HTML/CSS/JavaScript in the browser, no build step and no front-end libraries.
@@ -24,7 +27,14 @@ HTML/CSS/JavaScript in the browser, no build step and no front-end libraries.
   4 s timeout, filled in the background so the response never waits), resolves
   artwork through a verified iTunes → Deezer → `track.getInfo` fallback, and
   caches the lists for 60 seconds.
-- The browser receives plain JSON and draws the cards with CSS 3D transforms.
+- Every `/api/recent` response recomputes the `rank`: **#1 = highest total play
+  count**, ties broken by recency, then null counts ordered by the fallback
+  (repeat listens) and recency. The list and the ring are returned in that rank
+  order; the browser only displays it. Background play-count fills can reshuffle
+  the ring on the next poll, and the posters ease to their new slots over ~520 ms
+  without losing the selection. `rankBy: "playCount"` is sent with every item.
+- The browser receives plain JSON and draws the cards with CSS transforms
+  (the phone card rises in 3D; the Saturn ring is projected in JavaScript).
   The API key never reaches the browser.
 
 ```
@@ -75,9 +85,10 @@ fallback is in use). No key or user value is ever echoed.
 Run `npm test` for the `normalize()` / scoring checks.
 
 The extracted colour is darkened until white text stays readable, then used as
-a vertical gradient on the front card. Side cards switch to a frosted-glass
-material with a bright rim light, and a 70/30 mix of photo white and the cover
-colour tints the soft spill on the beam already present in the photo.
+a vertical gradient on the front card and as a tint on the ring line/band.
+Cards further back switch to a frosted-glass material with a bright rim light,
+and a 70/30 mix of photo white and the cover colour tints the soft spill on the
+beam already present in the photo.
 
 ### Why the cache matters
 
@@ -89,7 +100,7 @@ friendly message. The page then shows *"Last.fm is unreachable, showing the
 last known listens from 14:32"* instead of breaking. If there is no cached
 data at all, you get a clear error and a Retry button.
 
-### Why the cards change size and glow
+### Why the cards glow
 
 The browser computes a log-scale weight across the tracks currently loaded:
 
@@ -97,19 +108,28 @@ The browser computes a log-scale weight across the tracks currently loaded:
 w = (log(1 + count) - log(1 + min)) / (log(1 + max) - log(1 + min))
 ```
 
-If every count is the same, `w = 0.5`. The weight drives three CSS variables:
+If every count is the same, `w = 0.5`. On the single phone card the weight still
+drives size and lift; on the ring a poster's physical size follows its DEPTH on
+the ellipse (front ~1.22×, back ~0.9×) while play count only drives the glow:
 
 | Variable | Least played | Most played | Purpose |
 | --- | --- | --- | --- |
-| `--play-scale` | 0.82 | 1.12 | Overall card size |
+| `--play-scale` | 0.82 | 1.12 | Phone-card size only |
 | `--glow` | 0.25 | 1 | Rim, halo, gloss and cast shadow |
 | `--play-lift` | 0 | 1 | Slight float for favourites |
 
-The wheel's own dimming is multiplied in but clamped: glow never drops below
-0.25, brightness never below 0.8 and scale never below 0.82, so the quietest
-card is still readable. The front card stays fully opaque and sharp. Clicking a
-side card selects it; "Back to phone" / Escape / Enter collapses to that
-selection, and a new swipe reopens the wheel at the same track.
+The ring's depth cues are perspective-projected and clamped: opacity never drops
+below 0.35, blur never exceeds 2 px, brightness never drops below 0.6 and
+saturation never drops below 0.7, so the quietest back card is still readable.
+The small label under the title now shows only the **play count** ("12 plays",
+"1 play"), with a pulsing dot when the track is currently playing; a missing
+Last.fm total shows the repeat-listen fallback prefixed with `~` ("~1 play").
+The relative "played X ago" text is gone everywhere, though `playedAt` is still
+kept in the data and in `?debug=1` output. The front card stays fully opaque and
+sharp, with its rim light, larger play-count label and rewind/forward controls.
+Clicking ANY card selects it and rotates it to the front; "Back to phone" /
+Escape / Enter collapses to that selection, and a new swipe reopens the ring at
+the same track.
 
 ---
 
@@ -212,7 +232,7 @@ directly; there is no SVG fallback and no full-screen cover crop.
 
 The `.stage` element keeps the photo's `941 / 1672` ratio. It fills the width on
 a portrait phone and is viewport-height on a wide laptop, centred on a
-`#0b0f17` page with feathered edges. Every anchor, light layer, card and wheel
+`#0b0f17` page with feathered edges. Every anchor, light layer, card and ring
 measurement is relative to that stage (via `--stage-h` / `--stage-w`), never to
 the viewport.
 
@@ -220,20 +240,29 @@ Default values are already tuned for the bundled photo:
 
 ```css
 :root {
-  --phone-x: 51;
-  --phone-y: 52;
-  --card-scale: 1;      /* front card ≈ 36% of stage height */
-  --radius-scale: 1;      /* wheel spacing multiplier; 1 = full card gap */
+  --phone-x: 51;        /* ring centre X */
+  --phone-y: 52;        /* ring centre Y / phone height */
+  --card-scale: 1;      /* phone card ≈ 36% of stage height */
+  --ring-rx: 52;        /* % of stage width */
+  --ring-ry: 17;        /* % of stage height, before --ring-tilt */
+  --ring-roll: -9deg;   /* banks the whole ring; posters stay upright */
+  --ring-tilt: 1;       /* multiplier on --ring-ry */
+  --perspective: 2.2;   /* camera distance: lower = stronger perspective */
+  --ring-cy-offset: 0px;
 }
 ```
 
-Open <http://localhost:3000/?debug=1> to fine-tune. Click or drag on the stage
-where the phone screen is; the panel prints the stage-relative percentages and
-offers two sliders: **Card scale** (`--card-scale`) and **Wheel radius**
-(`--radius-scale`). Values are saved locally under a versioned key, so settings
-from the old viewport-based layout are ignored. Remove `?debug=1` when done.
-The anchor drives the "rise out of the phone" animation, the contact light and
-the centre of the wheel.
+Open <http://localhost:3000/?debug=1> to fine-tune. Cards stay clickable; the
+panel prints the current CSS values to the screen and console and offers sliders
+for **Card scale**, **Ring radius X** (`--ring-rx`), **Ring roll**
+(`--ring-roll`), **Ring tilt** (`--ring-tilt`), **Perspective**
+(`--perspective`), **Ring Y offset** (`--ring-cy-offset`) and **Ring card size**,
+plus **Show card hit areas** and **Pick phone anchor** toggles. Tick the anchor
+toggle only while click or dragging on the photo to place the phone. The clicked
+`data-id` is logged to the console so overlapping/back-half hits can be checked.
+Values are saved locally under a versioned key, so settings from the old layouts
+are ignored. Remove `?debug=1` when done. The anchor drives the "rise out of the
+phone" animation, the contact light and the centre of the ring.
 
 ---
 
@@ -242,16 +271,29 @@ the centre of the wheel.
 **On a laptop**
 
 - One card rises out of the phone on load.
-- Mouse wheel, click-drag and `←` / `→` rotate the wheel; it slows down and
-  snaps to a card. `Esc` or "Back to phone" returns to the single card.
-- Clicking a side card brings it to the front and marks it selected; clicking
-  the front card again, Escape, Enter or "Back to phone" collapses to it. A new
-  scroll/swipe reopens the wheel at that same card.
-- The most-played card is visibly biggest and glows most; the least-played is
-  smaller and dimmer but its title stays readable. A drag or a momentum scroll
-  never accidentally selects a card.
-- Space toggles the progress animation. The rewind/forward buttons move
-  between cards.
+- Scrolling / swiping / dragging / `←` `→` opens the **Saturn ring**: up to 24
+  upright posters stand on a banked, perspective-projected ellipse around the
+  phone, large/sharp in front and small/dim/cool behind, with a subtle tinted
+  ring band. A masked copy of the same photo covers the back half where it
+  crosses the person's silhouette, so those posters pass genuinely BEHIND the
+  body while the front half stays in front; front cards also get soft ring-plane
+  shadows and colour reflections.
+  The ring slows down and snaps to the nearest poster. `Esc`, Enter or "Back to
+  phone" returns to the single card.
+- Clicking ANY poster — front, side or back — selects it and rotates it to the
+  front; clicking it again, Escape, Enter or "Back to phone" collapses to it. A
+  new scroll/swipe reopens the ring at that same poster.
+- Ring posters sit evenly around the ellipse at rank order (#1 = most listened),
+  and the ones in FRONT are visibly larger than the ones behind. The #1 badge
+  follows that rank, not the ring position. The header counter shows the
+  selected rank over the total. Every poster shows its play count (never a
+  relative time), larger on the front card. When background lookups arrive, the
+  badges update and the posters ease into their new slots while the selection
+  stays put. A drag or a momentum scroll never accidentally selects a card, and
+  `?debug=1` hit outlines/console IDs confirm which `data-id` was hit for
+  overlapping neighbours.
+- Space toggles the progress animation. On the front card, rewind/forward
+  select the previous/next poster; other cards' controls are decorative.
 
 **On a phone**
 
@@ -282,15 +324,15 @@ the centre of the wheel.
 3. **1:00 — The rise.** Reload: "The card starts flat (`rotateX(80deg)`, tiny,
    transparent) on the phone and stands up with a spring easing. A light cone,
    a bright contact line and a blurred cast shadow make it feel physical."
-4. **1:30 — The wheel.** Scroll: "It becomes a cylinder around a vertical axis.
-   Every poster keeps `rotateY` + `translateZ`, stays upright, and only ~11
-   cards near the front are drawn even with 20 tracks. The radius adapts to the
-   number of tracks so neighbouring posters never stack on top of each other.
-   Total play count drives
-   size and glow on a log scale; the floors keep the quietest card readable.
-   Click a side card and it rotates to the front and stays selected through
-   refreshes. The front is tinted by its cover; the sides turn to frosted glass
-   with rim light and blur."
+4. **1:30 — The ring.** Scroll: "The posters fly out of the phone and stand on
+   a tilted Saturn ring around it — evenly spaced upright posters, with the
+   near ones LARGER, sharp and opaque and the far ones smaller, dimmer and slightly
+   blurred. The base size follows the projected neighbour gap, so more tracks
+   simply mean smaller posters instead of crowding. Total play count still
+   drives glow on a log scale. Click any card and it rotates by the shortest
+   path to the front and stays selected through refreshes. The ring line and
+   band are tinted by the front cover; back cards turn to frosted glass with
+   rim light and blur."
 5. **2:15 — Data details.** "The browser reads `user.getRecentTracks` through my server;
    a cached `track.getInfo` lookup adds each song's total play count in the
    background, so the response never waits. It prefers extralarge artwork and
@@ -300,7 +342,8 @@ the centre of the wheel.
    tint each card. Last.fm has no duration, so a stable seeded length drives
    the progress bar; now-playing animates for real."
 6. **2:45 — Finish.** Show `?debug=1`, explain you swap `me.jpg` for your real
-   photo, set the anchor and the two sliders, then press "Back to phone".
+   photo, set the anchor and the ring sliders, tick the hit-area outline to
+   check the `data-id` log, then press "Back to phone".
 
 ---
 
@@ -313,8 +356,8 @@ the centre of the wheel.
 | `test/cover-match.test.js` | North-star checks for matching and scoring |
 | `package.json` | Dependencies and `npm start` / `npm run start:env` / `npm run dev` |
 | `public/index.html` | Page structure, header, states, debug panel with sliders |
-| `public/styles.css` | Stage geometry, photo grading, contact light, tinted + glass cards, 3D wheel |
-| `public/app.js` | Rendering, dominant-colour canvas, stage-relative carousel math, input handling |
+| `public/styles.css` | Stage geometry, photo grading, contact light, tinted + glass cards, Saturn ring, pointer/hover states |
+| `public/app.js` | Rendering, dominant-colour canvas, stage-relative ring projection, reliable hit-testing and input handling |
 | `public/assets/me.jpg` | The portrait scene used by the stage |
 | `Dockerfile`, `docker-compose.yml` | One-command Docker setup on port 3000 |
 | `.env.example` | Empty template; copy to `.env` |

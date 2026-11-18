@@ -278,6 +278,42 @@ function schedulePlayCountFills(tracks) {
 }
 
 /**
+ * Rank by TOTAL play count: #1 = most played. Known counts come first, ties are
+ * broken by recency; tracks whose count is still null follow, ordered by the
+ * fallback count (occurrences in the recent list) and then recency. This runs
+ * on EVERY response, so a background fill reshuffles the ring on the next poll.
+ */
+function rankByPlayCount(tracks) {
+  const recency = (track) => {
+    if (track.nowPlaying) return Number.POSITIVE_INFINITY;
+    const ts = track.playedAt ? Date.parse(track.playedAt) : 0;
+    return Number.isFinite(ts) ? ts : 0;
+  };
+  const known = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
+  const fallbackOf = (track) => Math.max(1, Number(track.fallbackCount) || 1);
+
+  return tracks
+    .map((track, index) => ({ track, index }))
+    .sort((a, b) => {
+      const aKnown = known(a.track.playCount);
+      const bKnown = known(b.track.playCount);
+      if (aKnown !== bKnown) return aKnown ? -1 : 1;
+      if (aKnown && bKnown) {
+        const diff = Number(b.track.playCount) - Number(a.track.playCount);
+        if (diff) return diff;
+      } else {
+        const diff = fallbackOf(b.track) - fallbackOf(a.track);
+        if (diff) return diff;
+      }
+      const aRec = recency(a.track);
+      const bRec = recency(b.track);
+      if (aRec !== bRec) return bRec > aRec ? 1 : -1;
+      return a.index - b.index; // stable when everything ties
+    })
+    .map(({ track }, index) => ({ ...track, rank: index + 1, rankBy: 'playCount' }));
+}
+
+/**
  * Overlay the values we already know onto a fresh copy of the list. This runs
  * on EVERY /api/recent request, so values discovered in the background show up
  * on the next poll without waiting for the 60 s track cache to expire.
@@ -286,18 +322,19 @@ function withPlayCountFields(tracks, req) {
   schedulePlayCountFills(tracks);
   const debugged = req.query.debug === '1' && debugCoversEnabled();
 
-  const result = tracks.map((track) => {
+  const enriched = tracks.map((track) => {
     const key = playCountKey(track);
     const entry = freshPlayCount(key);
     const count = entry ? entry.count : null;
     return {
       ...track,
       playCount: count,
+      fallbackCount: Math.max(1, Number(track.fallbackCount) || 1),
       ...(debugged ? { playCountSource: count == null ? 'recent' : 'lastfm' } : {})
     };
   });
 
-  return withDebugFields(result, req);
+  return withDebugFields(rankByPlayCount(enriched), req);
 }
 
 /** Reject empty URLs and Last.fm's well-known grey placeholder image. */
@@ -339,7 +376,7 @@ function normalizeTrack(raw) {
     raw['@attr'] && String(raw['@attr'].nowplaying).toLowerCase() === 'true';
   const uts = Number(raw.date && raw.date.uts);
   const artist = text(raw.artist && raw.artist['#text']) || text(raw.artist && raw.artist.name);
-  const playcount = Number(raw.playcount);
+  const lastfmPlaycount = Number(raw.playcount);
   const rank = Number(raw['@attr'] && raw['@attr'].rank);
 
   return {
@@ -349,7 +386,8 @@ function normalizeTrack(raw) {
     image: pickLastfmImage(raw),
     durationSec: pseudoDurationSec(artist, name),
     // Only user.getTopTracks supplies these; recent listens get nulls.
-    playcount: Number.isFinite(playcount) && playcount > 0 ? playcount : null,
+    // Named distinctly from playCount so the JSON has no case-only duplicate.
+    lastfmPlaycount: Number.isFinite(lastfmPlaycount) && lastfmPlaycount > 0 ? lastfmPlaycount : null,
     rank: Number.isFinite(rank) && rank > 0 ? rank : null,
     nowPlaying: Boolean(nowPlaying),
     // The now-playing track has NO date in Last.fm's response.
@@ -359,6 +397,15 @@ function normalizeTrack(raw) {
   };
 }
 
+/** Accent-insensitive artist+track identity, shared by dedup and ranking. */
+function trackIdentityKey(track) {
+  return [track.artist, track.track]
+    .map((value) => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().replace(/\s+/g, ' ').trim())
+    .join('|');
+}
+
 /**
  * Keep one card per song. Last.fm's recent list is newest-first and can contain
  * the same track several times (repeat scrobbles, or the same song credited to
@@ -366,15 +413,9 @@ function normalizeTrack(raw) {
  * first (most recent) occurrence and drop the rest.
  */
 function removeDuplicateTracks(tracks) {
-  const keyOf = (track) => [track.artist, track.track]
-    .map((value) => String(value || '')
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase().replace(/\s+/g, ' ').trim())
-    .join('|');
-
   const seen = new Set();
   return tracks.filter((track) => {
-    const key = keyOf(track);
+    const key = trackIdentityKey(track);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -839,9 +880,20 @@ async function refreshTracks() {
   const json = await fetchLastfmTracks('user.getRecentTracks', RECENT_FETCH_LIMIT);
   const raw = json && json.recenttracks && json.recenttracks.track;
   const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-  return resolveCovers(
-    removeDuplicateTracks(list.map(normalizeTrack).filter(Boolean)).slice(0, RECENT_LIMIT)
-  );
+  const normalized = list.map(normalizeTrack).filter(Boolean);
+
+  // Count repeats BEFORE de-duplication: this is the fallback shown when a
+  // Last.fm total is still missing, and the secondary key for null-count ranks.
+  const occurrences = new Map();
+  normalized.forEach((track) => {
+    const key = trackIdentityKey(track);
+    occurrences.set(key, (occurrences.get(key) || 0) + 1);
+  });
+  normalized.forEach((track) => {
+    track.fallbackCount = occurrences.get(trackIdentityKey(track)) || 1;
+  });
+
+  return resolveCovers(removeDuplicateTracks(normalized).slice(0, RECENT_LIMIT));
 }
 
 /**
@@ -861,14 +913,14 @@ async function refreshTopTracks() {
       return {
         ...track,
         artist,
-        playcount: track.playcount || 0,
+        lastfmPlaycount: track.lastfmPlaycount || 0,
         rank: track.rank || 0,
         nowPlaying: false,
         playedAt: null
       };
     })
     .filter(Boolean)
-    .sort((a, b) => b.playcount - a.playcount)
+    .sort((a, b) => b.lastfmPlaycount - a.lastfmPlaycount)
     .slice(0, TOP_LIMIT);
 
   tracks.forEach((track, index) => { track.rank = index + 1; });
@@ -991,8 +1043,10 @@ app.get('/api/top', (req, res) => {
 });
 
 /**
- * The last 20 distinct sounds. ?debug=1 adds the original Last.fm track / artist /
- * album beside the chosen cover, coverSource and chosen album. No secrets.
+ * The last 20 distinct sounds, ORDERED BY RANK (total play count, 1 = most
+ * played) so the frontend only displays the list. ?debug=1 also adds the
+ * original Last.fm track / artist / album, playCountSource and playedAt.
+ * No secrets.
  */
 app.get('/api/recent', (req, res) => {
   serveTrackList(req, res, recentStore, refreshTracks, 'listens', withPlayCountFields);

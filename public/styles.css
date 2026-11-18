@@ -19,13 +19,36 @@
   --card-scale: 1;
   --card-h: calc(var(--stage-h) * 0.36 * var(--card-scale));
   --card-w: calc(var(--card-h) * 0.642857143);
-  --radius-scale: 1;
   --radius: 0px;
+
+  /* Saturn ring. JS computes the projected poster positions from the stage
+     size; these variables keep the geometry tunable in ?debug=1. */
+  --ring-rx: 52;        /* % of stage width */
+  --ring-ry: 17;        /* % of stage height, before --ring-tilt */
+  --ring-tilt: 1;       /* multiplier on --ring-ry */
+  --ring-roll: -9deg;   /* whole-ring bank; cards stay upright */
+  --perspective: 2.2;   /* camera distance f (1.2 = strong, 5 = weak) */
+  --ring-cy-offset: 0px;
+  --ring-card-scale: 1;
+  --ring-card-w: 66px;
+  --ring-card-h: 103px;
+  /* Poster size curve endpoints; the debug sliders adjust them live. */
+  --front-boost: 1;
+  --back-shrink: 1;
+
+  /* Person silhouette used to occlude the back half of the ring. Follows the
+     phone anchor horizontally; tall enough to cover hood + torso. */
+  --person-x: calc(var(--phone-x) * 1%);
+  --person-y: 34%;
+  --person-rx: 19%;
+  --person-ry: 22%;
+
   --focus: 1;
   --play-scale: 0.97;
   --play-glow: 0.62;
   --glow: 0.62;
   --play-lift: 0.5;
+  --fog: 1;
 
   /* Front cover's dominant colour, extracted from the proxied image. */
   --tint-rgb: 120, 150, 210;
@@ -98,6 +121,7 @@ html, body {
   background-position: 50% 52%;
   background-size: 100% 100%;
   background-repeat: no-repeat;
+  pointer-events: none;
   filter: saturate(.92);
   /* Feather only the photo layers so the side bands have no visible seam. */
   -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
@@ -248,7 +272,8 @@ body.is-wheel .light-spill { opacity: .7; }
    3. Stage deck and the giant card
    ------------------------------------------------------------------ */
 /* The deck's bottom-centre is the phone anchor. Pushing it back by the wheel
-   radius makes the front card finish at z = 0, exactly on the photo. */
+   radius made the old circle finish at z = 0; the Saturn ring keeps the phone
+   card flat, so --radius is simply 0 now. */
 .deck {
   position: absolute;
   left: calc(var(--phone-x) * 1%);
@@ -261,7 +286,130 @@ body.is-wheel .light-spill { opacity: .7; }
   transform-style: preserve-3d;
   transition: transform .5s cubic-bezier(.2, .8, .2, 1);
 }
-body.is-wheel .deck { transition: none; }
+body:not(.is-wheel) .deck { transform: translate(-50%, -100%); }
+
+/* Ring view: the deck becomes a flat, stage-sized coordinate system. JS places
+   each poster at (cx + rx·sin θ, cy + ry·cos θ) in these coordinates. The two
+   SVG halves are deck siblings so their z-index interleaves with the posters. */
+body.is-wheel .stage {
+  overflow: hidden;
+  touch-action: pan-y; /* vertical page gestures stay native; horizontal swipes spin */
+  cursor: grab;
+}
+body.is-wheel .deck {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: none;
+  transform-style: flat;
+  transition: none;
+  pointer-events: none; /* children opt back in explicitly */
+  touch-action: pan-y;
+}
+
+/* The SVGs only belong to ring mode; in phone mode the deck is card-sized. */
+body:not(.is-wheel) .ring { display: none; }
+
+.ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  fill-rule: evenodd;
+}
+.ring--back { z-index: 0; }     /* behind every poster (back posters start at 0) */
+.ring--front { z-index: 500; }  /* above back posters, below front posters */
+.ring__band {
+  fill: rgba(var(--tint-rgb), .055);
+  stroke: none;
+}
+/* The luminous path line is intentionally disabled: only the translucent band
+   and the per-card shadows/reflections mark the ring plane. */
+.ring__line { display: none; }
+.ring--front .ring__band { fill: rgba(var(--tint-rgb), .075); }
+
+/* Per-card light/dark marks painted on the near half of the ring plane. */
+.ring__shadow {
+  fill: rgba(0, 0, 0, .38);
+  filter: blur(6px);
+}
+.ring__reflection { filter: blur(7px); }
+
+body.is-wheel .card {
+  inset: auto;
+  left: 0;
+  top: 0;
+  width: var(--ring-card-w, 66px);
+  height: var(--ring-card-h, 103px);
+  /* Bottom-centre sits on the ellipse point before the JS translate. */
+  margin-left: calc(var(--ring-card-w, 66px) * -.5);
+  margin-top: calc(var(--ring-card-h, 103px) * -1);
+  transform-origin: 50% 100%;
+  transform-style: flat;
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: pan-y;
+  /* Rotation is smoothed by the JS spring (~450 ms to settle), so no CSS
+     transform transition is needed — and dragging stays perfectly immediate. */
+  transition: opacity .35s ease, filter .35s ease;
+  will-change: transform, opacity, filter;
+}
+body.is-dragging .stage,
+body.is-dragging .card { cursor: grabbing; }
+body.is-dragging .card { transition: none !important; }
+
+/* The masked photo copy used to hide back posters behind the person. It is now
+   disabled: every poster stays visible over the photo, while the depth-sorted
+   z-index still keeps front cards above back ones. The node is kept for stable
+   deck ordering, but it never paints. */
+.person-cover {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  pointer-events: none;
+  background-image:
+    linear-gradient(180deg, rgba(4, 7, 14, .34) 0%, transparent 22%, transparent 68%, rgba(4, 7, 14, .42) 100%),
+    radial-gradient(ellipse at var(--phone-x) 48%, transparent 32%, rgba(2, 4, 10, .24) 100%),
+    var(--scene-photo);
+  background-position: 0 0, 0 0, 50% 52%;
+  background-size: 100% 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  filter: saturate(.92);
+  -webkit-mask-image: radial-gradient(
+    ellipse var(--person-rx) var(--person-ry) at var(--person-x) var(--person-y),
+    #000 0 58%, transparent 100%);
+  mask-image: radial-gradient(
+    ellipse var(--person-rx) var(--person-ry) at var(--person-x) var(--person-y),
+    #000 0 58%, transparent 100%);
+}
+body.is-wheel .person-cover { display: none; }
+
+/* JS already multiplies the depth scale with the play-count weight, so the
+   scaler must not shrink the poster a second time. No rotateX/Y: upright only. */
+/* Depth scale is set per frame on .card itself; no wrapper transition may lag it. */
+body.is-wheel .card__scaler { transform: none; transition: none; }
+body.is-wheel .card__surface {
+  border-radius: calc(var(--ring-card-w, 66px) * .13);
+  box-shadow:
+    0 0 calc(5px + 12px * var(--glow, .6)) rgba(0, 0, 0, .5),
+    inset 0 0 0 1px rgba(224, 242, 255, .3);
+}
+body.is-wheel .card.is-front .card__surface {
+  box-shadow:
+    0 0 calc(12px + 30px * var(--glow, .8)) rgba(0, 0, 0, .55),
+    0 0 calc(12px + 38px * var(--glow, .8))
+      rgba(var(--tint-rgb), calc(.18 + .4 * var(--glow, .8))),
+    inset 0 0 0 1px rgba(255, 255, 255, .8),
+    inset 0 1px 0 rgba(255, 255, 255, .45);
+}
+body.is-wheel .card:hover .card__surface {
+  filter: brightness(1.1) drop-shadow(0 -3px 7px rgba(var(--tint-rgb), .45));
+}
 
 .card {
   position: absolute;
@@ -273,8 +421,8 @@ body.is-wheel .deck { transition: none; }
   will-change: transform, opacity, filter, visibility;
 }
 body:not(.is-wheel) .card:not(.is-selected) { opacity: 0; visibility: hidden; }
-body.is-wheel .card { pointer-events: auto; cursor: grab; }
-body.is-wheel .card[style*="visibility: hidden"] { pointer-events: none; }
+/* Pointer/cursor rules for the ring live with the deck layout above: the card
+   itself is the click target (pointer), while the stage is the grab surface. */
 
 /* Scale + a small random tilt live on this wrapper so they never fight the
    rise animation on .card__surface or the wheel rotation on .card. */
@@ -380,6 +528,21 @@ body.is-wheel .card[style*="visibility: hidden"] { pointer-events: none; }
   transition: opacity .5s ease;
 }
 
+/* Atmospheric fog: back cards drift toward the photo's blue-grey. --fog is
+   depth d (1 front, 0 back), so this layer disappears on the front card. */
+.card__fog {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: calc((1 - var(--fog, 1)) * .24);
+  mix-blend-mode: screen;
+  background: linear-gradient(160deg,
+    rgba(96, 128, 160, .55), rgba(150, 180, 210, .35));
+  transition: opacity .35s ease;
+}
+
 @keyframes emerge {
   0% {
     opacity: 0;
@@ -407,12 +570,21 @@ body:not(.is-wheel) .card.is-selected .card__surface {
   animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both,
              float 5s ease-in-out 1000ms infinite;
 }
-body.is-wheel .card__surface { animation: float 6s ease-in-out infinite; animation-delay: calc(var(--i, 0) * -430ms); }
+/* Upright-only motion in the wheel: no rotateX, the posters stay vertical. */
+body.is-wheel .card__surface { animation: wheelFloat 6s ease-in-out infinite; animation-delay: calc(var(--i, 0) * -430ms); }
 body.is-wheel .card.is-entering .card__surface {
-  animation: emerge 620ms cubic-bezier(.16, 1.1, .3, 1) both;
+  animation: wheelEmerge 620ms cubic-bezier(.16, 1.1, .3, 1) both;
   animation-delay: calc(var(--i, 0) * 12ms);
 }
 .card.is-new .card__scaler { animation: slideFront 550ms ease-out both; }
+@keyframes wheelFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(calc(var(--ring-card-h, 103px) * -.02)); }
+}
+@keyframes wheelEmerge {
+  from { opacity: 0; transform: translateY(10px) scale(.85); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 /* ------------------------------------------------------------------ *
    4. The iOS-style player contents
@@ -544,10 +716,10 @@ body.is-wheel .card.is-entering .card__surface {
 }
 .card__time--live { color: #d7f3e4; }
 .card__plays {
-  font-weight: 750;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, .96);
-  text-shadow: 0 1px 6px rgba(0, 0, 0, .55);
+  color: rgba(255, 255, 255, .98);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, .7);
 }
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #79e6a5; box-shadow: 0 0 9px #79e6a5; animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
@@ -616,6 +788,67 @@ body.is-wheel .card.is-entering .card__surface {
 .volume__fill { width: 72%; height: 100%; border-radius: 99px; background: #fff; }
 .volume__knob { position: absolute; top: 50%; left: 72%; width: 8px; height: 8px; border-radius: 50%; background: #fff; transform: translate(-50%, -50%); }
 
+/* Ring posters are small upright covers: artwork, rank, labels and, on the
+   front card only, the time/play-count line plus rewind/forward controls. */
+body.is-wheel .card__content { padding: 3.5cqw; }
+body.is-wheel .cover {
+  width: min(100%, 46cqh);
+  border-radius: 4cqw;
+}
+body.is-wheel .card__meta { padding-top: 1.5cqh; gap: 1cqw; }
+body.is-wheel .card__title {
+  font-size: clamp(7px, 9.5cqh, 14px);
+}
+body.is-wheel .card__artist {
+  font-size: clamp(6px, 6.5cqh, 10px);
+  margin-top: 1px;
+}
+body.is-wheel .card__icons,
+body.is-wheel .progress,
+body.is-wheel .volume { display: none; }
+
+/* The play count replaces the old "played X ago" label and stays visible on
+   EVERY ring poster, not just the front one. */
+body.is-wheel .card__time {
+  display: flex;
+  padding-top: 1cqh;
+  font-size: clamp(7px, 5cqh, 9px);
+}
+body.is-wheel .card.is-front .card__time,
+body.is-wheel .card.is-selected .card__time { font-size: clamp(9px, 6cqh, 11px); }
+
+body.is-wheel .controls {
+  display: none;
+  gap: 7cqw;
+  padding: 1cqh 0 0;
+}
+body.is-wheel .card.is-front .controls { display: flex; }
+/* In ring mode the controls are decoration, except the front card's
+   rewind/forward — those select the previous/next poster. */
+body.is-wheel .control { pointer-events: none; }
+body.is-wheel .card.is-front .control--rewind,
+body.is-wheel .card.is-front .control--forward { pointer-events: auto; }
+body.is-wheel .card.is-front .control--play { opacity: .6; }
+body.is-wheel .control svg {
+  width: clamp(10px, 8cqw, 16px);
+  height: clamp(10px, 8cqw, 16px);
+}
+body.is-wheel .control--play svg {
+  width: clamp(12px, 9cqw, 18px);
+  height: clamp(12px, 9cqw, 18px);
+}
+
+body.is-wheel .cover__rank {
+  top: 4px; left: 4px;
+  font-size: clamp(6px, 8cqh, 10px);
+  padding: 2px 4px;
+}
+body.is-wheel .card__selected {
+  top: 4px; right: 4px;
+  font-size: clamp(6px, 7cqh, 9px);
+  padding: 2px 4px;
+}
+
 /* ------------------------------------------------------------------ *
    5. Loading / empty / error states
    ------------------------------------------------------------------ */
@@ -680,6 +913,83 @@ body.is-wheel .card.is-entering .card__surface {
   color: #fff; font: inherit; font-size: 11.5px; cursor: pointer; backdrop-filter: blur(12px);
 }
 .back:hover { background: rgba(40, 52, 84, .8); }
+
+/* Full title / artists of the selected track, above "Back to phone". It never
+   receives pointer events, so every card underneath stays clickable. */
+.caption {
+  position: absolute; left: 50%;
+  bottom: calc(50% - var(--stage-h) * .475 + max(6px, env(safe-area-inset-bottom)) + 48px);
+  transform: translateX(-50%); z-index: 24;
+  width: calc(var(--stage-w) * .86); max-width: 86%;
+  margin: 0; padding: 9px 14px 10px; border-radius: 16px;
+  /* Tinted glass: same hue as the rim, just slightly darker than the outline. */
+  background:
+    linear-gradient(rgba(var(--tint-rgb), .26), rgba(var(--tint-rgb), .26)),
+    rgba(9, 13, 24, .52);
+  border: 1px solid rgba(var(--tint-rgb), .5);
+  box-shadow:
+    inset 0 1px 0 rgba(var(--tint-rgb), .24),
+    0 0 22px rgba(var(--tint-rgb), .16),
+    0 12px 34px rgba(0, 0, 0, .38);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  text-align: center; pointer-events: none;
+  opacity: 0; visibility: hidden;
+  transition: opacity .25s ease, visibility .25s ease,
+    border-color .35s ease, box-shadow .5s ease, background .5s ease;
+}
+/* Same cool-white + cover-colour rim as the selected poster. */
+.caption::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 0;
+  border-radius: inherit; padding: 1px; pointer-events: none;
+  background: linear-gradient(135deg,
+    rgba(232, 246, 255, calc(.24 + .42 * var(--glow, .62))),
+    rgba(255, 255, 255, calc(.07 + .16 * var(--glow, .62))) 36%,
+    rgba(var(--tint-rgb), calc(.4 + .32 * var(--glow, .62))) 72%,
+    rgba(225, 242, 255, calc(.22 + .38 * var(--glow, .62))));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  transition: background .5s ease;
+}
+.caption__meta, .caption__title, .caption__artists { position: relative; z-index: 1; }
+.caption.is-visible { opacity: 1; visibility: visible; }
+/* Full details belong to the single-card view only: hide them while the ring
+   is open, with the same 250 ms fade. */
+body.is-wheel .caption { opacity: 0; visibility: hidden; }
+.caption__meta {
+  display: flex; justify-content: center; align-items: center;
+  gap: 8px; margin-bottom: 5px;
+}
+.caption__rank {
+  padding: 2px 7px; border-radius: 99px;
+  font-size: 10px; font-weight: 800; line-height: 1.4; color: #2b1b04;
+  background: linear-gradient(135deg, rgba(255, 226, 160, .96), rgba(228, 166, 66, .92));
+  border: 1px solid rgba(255, 245, 210, .8);
+}
+.caption__plays {
+  font-size: 10.5px; color: rgba(255, 255, 255, .74);
+  font-variant-numeric: tabular-nums;
+}
+.caption__title {
+  margin: 0; color: #fff; font-weight: 750;
+  font-size: clamp(12px, calc(var(--stage-h) * .022), 18px); line-height: 1.22;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.caption__artists {
+  margin-top: 4px; color: rgba(226, 238, 255, .72);
+  font-size: clamp(10px, calc(var(--stage-h) * .016), 13px); line-height: 1.3;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.caption.is-swap .caption__text { animation: captionSwap .25s ease both; }
+@keyframes captionSwap {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+
 .banner {
   position: absolute; left: 50%;
   top: calc(50% - var(--stage-h) * .395);
@@ -710,12 +1020,24 @@ body.is-wheel .card.is-entering .card__surface {
 .debug__row { display: block; margin-top: 8px; }
 .debug__row span { display: flex; justify-content: space-between; }
 .debug__row input { width: 100%; accent-color: #8cc8ff; }
+.debug__check {
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 10px; color: rgba(255, 255, 255, .85); cursor: pointer;
+}
+.debug__check input { width: 14px; accent-color: #8cc8ff; }
+/* Debug hit areas: outline the exact transformed poster rectangle. */
+body.show-hit-areas.is-wheel .card {
+  outline: 1px dashed rgba(120, 230, 255, .95);
+  outline-offset: 0;
+}
 .debug-overlay {
   position: absolute; left: 50%; top: 50%;
   width: var(--stage-w); height: var(--stage-h);
   transform: translate(-50%, -50%);
   z-index: 35; cursor: crosshair;
+  pointer-events: none; /* let debug clicks reach the cards by default */
 }
+body.pick-anchor .debug-overlay { pointer-events: auto; }
 
 /* ------------------------------------------------------------------ *
    8. Reduced motion: fades only, no float, no spring
@@ -729,7 +1051,9 @@ body.is-wheel .card.is-entering .card__surface {
   .state-card, .live-dot, .skeleton, .eq.is-live rect {
     animation: none !important;
   }
-  .card__scaler, .card__surface, .card__surface::before, .card__surface::after,
-  .card__glass, .card__gloss, .card__selected, .deck,
-  .light-spill, .jacket-reflection, .hint, .control { transition: none !important; }
+  .card, body.is-wheel .card, .card__scaler, .card__surface,
+  .card__surface::before, .card__surface::after,
+  .card__glass, .card__gloss, .card__fog, .card__selected, .deck,
+  .light-spill, .jacket-reflection, .hint, .control,
+  .caption, .caption::before, .caption.is-swap .caption__text { transition: none !important; animation: none !important; }
 }
