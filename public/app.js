@@ -4,12 +4,14 @@
  * What your music looks like — frontend
  * -------------------------------------
  * Plain JavaScript. The browser talks ONLY to our own server:
- *   /api/recent  -> the last 50 listens (no secrets, ever)
+ *   /api/recent  -> the last 20 distinct sounds, with server-cached play counts
  *   /api/cover   -> same-origin image proxy, so canvas can read cover pixels
  *
  * The visual idea: a giant iOS "Now Playing" card is a physical object inside
  * the photo. It rises out of the flat phone, casts a shadow, and (on scroll /
- * swipe / drag / arrow keys) becomes a 3D wheel of recent albums.
+ * swipe / drag / arrow keys) becomes a 3D wheel of your recent listens.
+ * Your most-played track is the biggest and brightest; quieter ones stay
+ * smaller but always readable. Clicking any visible card selects it.
  */
 
 (() => {
@@ -47,7 +49,13 @@
     nowPlayingStart: Date.now(),
     cardScale: 1,
     radiusScale: 1,
-    anchor: { x: 50, y: 68 }
+    anchor: { x: 51, y: 52 },
+
+    // Stable selection: artist + track + playedAt, never an array index.
+    selectedId: null,
+    explicitSelection: false,
+    press: null,          // pointer-down candidate for a click
+    suppressClickUntil: 0 // blocks taps right after a drag / momentum scroll
   };
 
   // Static SVGs. No brand marks: just generic player glyphs.
@@ -82,6 +90,62 @@
 
   function trackKey(track) {
     return `${track.track}|${track.artist}|${track.album}`.toLowerCase();
+  }
+
+  /** Accent-insensitive, lowercase label used for stable keys. */
+  function normalizeLabel(value) {
+    return String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  /** Stable across a 60 s refresh and inserted scrobbles. */
+  function selectionId(track) {
+    const when = track.playedAt || (track.nowPlaying ? 'now' : 'unknown');
+    return `${normalizeLabel(track.artist)}|${normalizeLabel(track.track)}|${when}`;
+  }
+
+  /** Same track across repeated listens: used for the recent-list fallback. */
+  function playKey(track) {
+    return `${normalizeLabel(track.artist)}|${normalizeLabel(track.track)}`;
+  }
+
+  /**
+   * Log-scale weight over the tracks currently loaded. Last.fm's value wins;
+   * while it is still null we fall back to the number of times the same
+   * normalized track appears in this recent list (never less than 1).
+   */
+  function computePlayStats(tracks) {
+    const occurrences = new Map();
+    tracks.forEach((track) => {
+      const key = playKey(track);
+      occurrences.set(key, (occurrences.get(key) || 0) + 1);
+    });
+
+    const raw = tracks.map((track) => {
+      const fromLastfm = Number(track.playCount);
+      const fallback = Math.max(1, occurrences.get(playKey(track)) || 1);
+      const count = Number.isFinite(fromLastfm) && fromLastfm > 0
+        ? Math.floor(fromLastfm) : fallback;
+      return { id: selectionId(track), count };
+    });
+
+    const counts = raw.map((item) => item.count);
+    const min = counts.length ? Math.min(...counts) : 1;
+    const max = counts.length ? Math.max(...counts) : 1;
+    const span = Math.log1p(max) - Math.log1p(min);
+
+    return new Map(raw.map((item) => {
+      const w = span > 0 ? (Math.log1p(item.count) - Math.log1p(min)) / span : 0.5;
+      const weight = clamp(w, 0, 1);
+      return [item.id, {
+        count: item.count,
+        weight,
+        scale: 0.82 + 0.30 * weight,          // lerp(0.82, 1.12, w)
+        glow: 0.25 + 0.75 * weight,           // lerp(0.25, 1, w)
+        lift: weight
+      }];
+    }));
   }
 
   function formatTime(seconds) {
@@ -120,6 +184,9 @@
 
   function showState(icon, title, body, retry) {
     state.tracks = [];
+    state.selectedId = null;
+    state.explicitSelection = false;
+    state.press = null;
     state.mode = 'phone';
     document.body.classList.remove('is-wheel');
     stopLoop();
@@ -140,17 +207,8 @@
    * Photo + tuning panel (?debug=1)
    * ---------------------------------------------------------------- */
   function loadScenePhoto() {
-    const candidates = ['/assets/me.jpg', '/assets/me.svg'];
-    let index = 0;
-    function next() {
-      if (index >= candidates.length) return;
-      const url = candidates[index++];
-      const probe = new Image();
-      probe.onload = () => root.style.setProperty('--scene-photo', `url('${url}')`);
-      probe.onerror = next;
-      probe.src = url;
-    }
-    next();
+    // The stage has the photo's exact ratio, so no cover-crop fallback needed.
+    root.style.setProperty('--scene-photo', "url('/assets/me.jpg')");
   }
 
   function printDebug() {
@@ -180,10 +238,17 @@
 
     try {
       const saved = JSON.parse(localStorage.getItem('wot-settings') || 'null');
-      if (saved) {
+      // v1 stored viewport-relative values for the old photo. Ignore them so
+      // the new stage defaults are not silently overridden by stale storage.
+      // v2's radius scale was tuned against the old capped wheel formula, which
+      // made cards overlap; keep its anchor/card scale but start the wheel from
+      // the new default so the fix is visible without clearing storage.
+      if (saved && (saved.v === 2 || saved.v === 3)) {
         if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) state.anchor = { x: saved.x, y: saved.y };
         if (Number.isFinite(saved.cardScale)) state.cardScale = clamp(saved.cardScale, 0.5, 1.6);
-        if (Number.isFinite(saved.radiusScale)) state.radiusScale = clamp(saved.radiusScale, 0.5, 2);
+        if (saved.v === 3 && Number.isFinite(saved.radiusScale)) {
+          state.radiusScale = clamp(saved.radiusScale, 0.5, 2);
+        }
       }
     } catch (_) { /* ignore broken storage */ }
 
@@ -199,7 +264,7 @@
     printDebug();
 
     function setAnchor(event) {
-      const rect = els.scene.getBoundingClientRect();
+      const rect = els.stage.getBoundingClientRect();
       state.anchor = {
         x: clamp((event.clientX - rect.left) / rect.width * 100, 0, 100),
         y: clamp((event.clientY - rect.top) / rect.height * 100, 0, 100)
@@ -226,6 +291,7 @@
 
   function saveSettings() {
     localStorage.setItem('wot-settings', JSON.stringify({
+      v: 3,
       x: state.anchor.x, y: state.anchor.y,
       cardScale: state.cardScale, radiusScale: state.radiusScale
     }));
@@ -287,7 +353,49 @@
   function updateSceneTint() {
     const card = frontCard();
     const rgb = card && card._parts && card._parts.tintRgb;
-    if (rgb) root.style.setProperty('--tint-rgb', rgb);
+    if (!rgb) return;
+    root.style.setProperty('--tint-rgb', rgb);
+
+    // The spill on the photo's beam is 70% cool photo white + 30% cover tint.
+    const cover = rgb.split(',').map((value) => Number(value.trim()));
+    if (cover.length === 3 && cover.every((value) => Number.isFinite(value))) {
+      const coolWhite = [205, 230, 255];
+      const spill = coolWhite.map((value, i) => Math.round(value * 0.7 + cover[i] * 0.3));
+      root.style.setProperty('--spill-rgb', spill.join(', '));
+    }
+  }
+
+  function findSelectedIndex() {
+    if (!state.selectedId) return 0;
+    const index = state.tracks.findIndex((track) => selectionId(track) === state.selectedId);
+    return index < 0 ? 0 : index;
+  }
+
+  function setSelected(index, explicit = true) {
+    if (!state.tracks.length) return;
+    const safe = ((index % state.tracks.length) + state.tracks.length) % state.tracks.length;
+    const track = state.tracks[safe];
+    state.selectedId = selectionId(track);
+    if (explicit) state.explicitSelection = true;
+    Array.from(els.deck.children).forEach((card, i) => {
+      card.classList.toggle('is-selected', card.dataset.id === state.selectedId);
+    });
+  }
+
+  function applyPlayVars(card, stats) {
+    if (!card || !stats) return;
+    card.style.setProperty('--play-scale', stats.scale.toFixed(3));
+    card.style.setProperty('--play-glow', stats.glow.toFixed(3));
+    card.style.setProperty('--play-lift', stats.lift.toFixed(3));
+    card.style.setProperty('--glow', stats.glow.toFixed(3));
+    if (card._parts) {
+      card._parts.glowBase = stats.glow;
+      card._parts.playCount = stats.count;
+      if (card._parts.playLabel) {
+        card._parts.playLabel.textContent =
+          `played ${stats.count} ${stats.count === 1 ? 'time' : 'times'}`;
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- *
@@ -318,16 +426,25 @@
     return button;
   }
 
-  function buildCard(track, index) {
+  function buildCard(track, index, list, stats) {
+    const rank = track.rank || index + 1;
+
     const card = el('div', 'card');
+    card.dataset.id = selectionId(track);
+    if (rank <= 3) card.classList.add('card--podium');
     card.style.setProperty('--i', index);
+    card.style.setProperty('--rank', String(rank));
     card.style.setProperty('--tilt-z', `${hashString(track.track) % 7 - 3}deg`);
     card.style.setProperty('--tilt-x', `${hashString(track.artist) % 9 - 4}deg`);
     card.style.setProperty('--focus', '1');
+    applyPlayVars(card, stats || { scale: 0.97, glow: 0.62, lift: 0.5, count: 1 });
 
     const scaler = el('div', 'card__scaler');
     const surface = el('div', 'card__surface');
     surface.append(el('div', 'card__glass'), el('div', 'card__tint'), el('div', 'card__gloss'));
+    const selectedBadge = el('span', 'card__selected', 'Selected');
+    selectedBadge.setAttribute('aria-hidden', 'true');
+    surface.appendChild(selectedBadge);
 
     const content = el('div', 'card__content');
 
@@ -344,16 +461,21 @@
         catch (_) { applyTint(card, tintFromTitle(label)); } // e.g. tainted canvas
       };
       image.onerror = () => {
-        cover.replaceChildren(makeGradientCover(label), el('div', 'cover__shade'));
+        cover.replaceChildren(
+          makeGradientCover(track.track),
+          el('div', 'cover__shade'),
+          el('span', 'cover__rank', `#${rank}`)
+        );
         applyTint(card, tintFromTitle(label));
       };
       image.src = `/api/cover?u=${encodeURIComponent(track.image)}`;
       cover.appendChild(image);
     } else {
-      cover.appendChild(makeGradientCover(label));
+      cover.appendChild(makeGradientCover(track.track));
       applyTint(card, tintFromTitle(label));
     }
     cover.appendChild(el('div', 'cover__shade'));
+    cover.appendChild(el('span', 'cover__rank', `#${rank}`));
     content.appendChild(cover);
 
     // --- title / artist / small icons ---
@@ -372,7 +494,7 @@
     meta.append(labels, icons);
     content.appendChild(meta);
 
-    // --- relative time / live pulse ---
+    // --- relative time + the play count label (hidden only if unknown) ---
     const time = el('div', track.nowPlaying ? 'card__time card__time--live' : 'card__time');
     if (track.nowPlaying) {
       const dot = el('i', 'live-dot');
@@ -380,6 +502,14 @@
       time.append(dot, document.createTextNode('Now playing'));
     } else {
       time.textContent = relativeTime(track.playedAt);
+    }
+    const playCount = stats && stats.count;
+    let playLabel = null;
+    if (Number.isFinite(playCount) && playCount > 0) {
+      time.appendChild(document.createTextNode(' · '));
+      playLabel = el('span', 'card__plays',
+        `played ${playCount} ${playCount === 1 ? 'time' : 'times'}`);
+      time.appendChild(playLabel);
     }
     content.appendChild(time);
 
@@ -417,14 +547,17 @@
     card.appendChild(scaler);
 
     card._parts = {
-      fill, knob, elapsed, remaining, time, tintRgb: null,
-      duration: durationFor(track), playedAt: track.playedAt, nowPlaying: track.nowPlaying
+      fill, knob, elapsed, remaining, time, playLabel, tintRgb: null,
+      duration: durationFor(track), playedAt: track.playedAt,
+      nowPlaying: track.nowPlaying, demoProgress: track.playcount != null,
+      glowBase: stats ? stats.glow : 0.62,
+      playCount: playCount || 1
     };
     return card;
   }
 
   function renderLoading() {
-    const card = el('div', 'card is-skeleton');
+    const card = el('div', 'card is-skeleton is-selected');
     const scaler = el('div', 'card__scaler');
     const surface = el('div', 'card__surface');
     surface.append(el('div', 'card__glass'), el('div', 'card__tint'));
@@ -446,39 +579,63 @@
       card.style.filter = '';
       card.style.zIndex = '';
       card.style.setProperty('--focus', '1');
+      if (card._parts && card._parts.glowBase) {
+        card.style.setProperty('--glow', card._parts.glowBase.toFixed(3));
+      }
       card.classList.remove('is-entering');
     });
   }
 
   function renderTracks(tracks, previousFirst) {
     const wasWheel = state.mode === 'wheel';
-    const previousKey = wasWheel && state.tracks.length
-      ? trackKey(state.tracks[state.frontIndex]) : null;
+    const stats = computePlayStats(tracks);
+    const ids = tracks.map(selectionId);
+
+    // Keep only an EXPLICIT choice. Until the user picks a card, every refresh
+    // follows the now-playing / newest listen.
+    let index = state.explicitSelection && state.selectedId
+      ? ids.indexOf(state.selectedId) : -1;
+    if (index < 0) {
+      if (state.explicitSelection && state.selectedId) state.explicitSelection = false;
+      index = 0;
+    }
+
+    const oldCards = Array.from(els.deck.children);
+    const sameCards = oldCards.length === tracks.length &&
+      oldCards.every((card, i) => card.dataset.id === ids[i]);
+    if (sameCards) {
+      // Values arrived in the background: update in place so CSS can animate
+      // the size/glow change instead of rebuilding every card.
+      tracks.forEach((track, i) => applyPlayVars(oldCards[i], stats.get(ids[i])));
+    } else {
+      els.deck.replaceChildren(...tracks.map((track, i) =>
+        buildCard(track, i, tracks, stats.get(ids[i]))));
+    }
 
     state.tracks = tracks;
-    els.deck.replaceChildren(...tracks.map(buildCard));
+    state.selectedId = ids[index];
+    state.frontIndex = index;
+    Array.from(els.deck.children).forEach((card, i) => {
+      card.classList.toggle('is-selected', i === index);
+      card.classList.remove('is-front');
+    });
+
     state.step = tracks.length > 1 ? 360 / tracks.length : 0;
     computeRadius();
-
-    let index = 0;
-    if (previousKey) {
-      const found = tracks.findIndex((item) => trackKey(item) === previousKey);
-      if (found >= 0) index = found;
-    }
     state.rotation = index * state.step;
     state.velocity = 0;
-    state.target = state.rotation;
+    state.target = null;
     state.snapAt = 0;
 
     // A newly scrobbled track slides in at the front.
-    if (previousFirst && trackKey(tracks[0]) !== previousFirst && !wasWheel) {
+    if (previousFirst && trackKey(tracks[0]) !== previousFirst && !wasWheel && !sameCards) {
       els.deck.firstElementChild.classList.add('is-new');
     }
 
-    if (wasWheel) { state.target = null; applyWheel(); }
+    if (wasWheel) applyWheel();
     else {
       clearCardStyles();
-      els.counter.textContent = `1 / ${tracks.length}`;
+      els.counter.textContent = `${index + 1} / ${tracks.length}`;
       updateSceneTint();
     }
   }
@@ -487,12 +644,22 @@
    * The virtualised 3D wheel
    * ---------------------------------------------------------------- */
   function computeRadius() {
-    const width = (els.deck.offsetWidth || 300) * state.cardScale;
+    const stage = els.stage.getBoundingClientRect();
+    const stageH = stage.height || 600;
+    const stageW = stage.width || stageH * 0.562829665;
+    // --card-h / --card-w already include --card-scale; do not apply it twice.
+    const width = els.deck.offsetWidth || stageH * 0.23;
     const count = state.tracks.length;
-    // Neighbouring posters sit about one card-width apart.
-    state.radius = count > 1
-      ? (width * 1.06) / (2 * Math.sin(Math.PI / count)) * state.radiusScale
-      : width * 0.6 * state.radiusScale;
+    // Keep about one card-width of clearance between neighbours. The ring
+    // widens as the list grows, so 20 posters fan out instead of piling up
+    // on top of each other; the ones further back simply leave the stage.
+    const spacing = width * 1.06;
+    const ideal = count > 1
+      ? spacing / (2 * Math.sin(Math.PI / count))
+      : width * 0.5;
+    // Safety cap only: it must never be what makes cards overlap.
+    const maxRadius = stageW * 2;
+    state.radius = Math.max(0, Math.min(ideal, maxRadius) * state.radiusScale);
     root.style.setProperty('--radius', `${Math.round(state.radius)}px`);
   }
 
@@ -506,7 +673,9 @@
       only.style.transform = `translateZ(${state.radius}px)`;
       only.style.visibility = 'visible';
       only.style.opacity = '1';
+      only.style.filter = 'none';
       only.style.setProperty('--focus', '1');
+      only.classList.add('is-front');
       state.frontIndex = 0;
       els.counter.textContent = '1 / 1';
       updateSceneTint();
@@ -529,16 +698,30 @@
       if (Math.abs(delta) > half + 1) {
         card.style.visibility = 'hidden';
         card.style.opacity = '0';
+        card.classList.remove('is-front');
         continue;
       }
       const angle = (delta - offset) * state.step;
       const ratio = Math.min(1, distance / (half + 0.5));
+      const focus = 1 - ratio;
+      const isFront = distance < 0.08;
+      const isSelected = card.dataset.id === state.selectedId;
+      const crisp = isFront || isSelected;
+      const glowBase = card._parts && card._parts.glowBase
+        ? card._parts.glowBase : 0.62;
+
       card.style.visibility = 'visible';
       card.style.transform = `rotateY(${angle.toFixed(2)}deg) translateZ(${state.radius}px)`;
-      card.style.opacity = distance > half + 0.4 ? '0' : (1 - ratio * 0.42).toFixed(3);
-      card.style.filter = `blur(${(ratio * 2.4).toFixed(2)}px) brightness(${(1 - ratio * 0.34).toFixed(2)})`;
-      card.style.setProperty('--focus', (1 - ratio).toFixed(2));
+      card.style.opacity = crisp ? '1' : Math.max(0.72, 1 - ratio * 0.28).toFixed(3);
+      // Keep the existing wheel blur, but never darken past the readability floor.
+      card.style.filter = crisp ? 'none'
+        : `blur(${(ratio * 2.4).toFixed(2)}px) brightness(${Math.max(0.8, 1 - ratio * 0.2).toFixed(2)})`;
+      card.style.setProperty('--focus', focus.toFixed(2));
+      // Multiplicative with the wheel focus, clamped to the same 0.25 floor.
+      card.style.setProperty('--glow',
+        Math.max(0.25, glowBase * (0.62 + 0.38 * focus)).toFixed(3));
       card.style.zIndex = String(100 - Math.round(distance * 2));
+      card.classList.toggle('is-front', isFront);
     }
     els.counter.textContent = `${state.frontIndex + 1} / ${count}`;
     updateSceneTint();
@@ -546,14 +729,21 @@
 
   function snapToNearest() {
     if (!state.step) { state.target = 0; return; }
-    state.target = Math.round(state.rotation / state.step) * state.step;
+    const turns = Math.round(state.rotation / state.step);
+    state.target = turns * state.step;
     state.velocity = 0;
+    if (state.mode === 'wheel' && state.tracks.length) {
+      setSelected(((turns % state.tracks.length) + state.tracks.length) % state.tracks.length);
+    }
   }
 
   function stepTo(index) {
     if (state.mode !== 'wheel') openWheel();
     if (!state.step) { state.target = 0; return; }
-    let target = index * state.step;
+    const count = state.tracks.length;
+    const safe = ((index % count) + count) % count;
+    setSelected(safe);
+    let target = safe * state.step;
     target += Math.round((state.rotation - target) / 360) * 360;
     state.target = target;
     state.velocity = 0;
@@ -596,13 +786,17 @@
     els.backButton.hidden = false;
     els.hint.classList.add('is-hidden');
     computeRadius();
-    state.rotation = 0;
-    state.target = 0;
+    // Reopen at whatever the user selected, not necessarily the newest listen.
+    const selected = findSelectedIndex();
+    state.selectedId = selectionId(state.tracks[selected]);
+    Array.from(els.deck.children).forEach((card, i) => {
+      card.classList.toggle('is-selected', i === selected);
+      if (i > 0) card.classList.add('is-entering');
+    });
+    state.rotation = selected * state.step;
+    state.target = null;
     state.velocity = 0;
     state.snapAt = 0;
-    Array.from(els.deck.children).forEach((card, index) => {
-      if (index > 0) card.classList.add('is-entering');
-    });
     window.setTimeout(() => {
       Array.from(els.deck.children).forEach((card) => card.classList.remove('is-entering'));
     }, 900);
@@ -611,6 +805,8 @@
 
   function closeWheel() {
     if (state.mode !== 'wheel') return;
+    // The visible front card is the choice we collapse to.
+    if (state.tracks.length) setSelected(state.frontIndex);
     state.mode = 'phone';
     document.body.classList.remove('is-wheel');
     els.backButton.hidden = true;
@@ -620,13 +816,18 @@
     state.target = null;
     state.snapAt = 0;
     clearCardStyles();
-    if (state.tracks.length) els.counter.textContent = `1 / ${state.tracks.length}`;
+    Array.from(els.deck.children).forEach((card) => card.classList.remove('is-front'));
+    if (state.tracks.length) {
+      els.counter.textContent = `${findSelectedIndex() + 1} / ${state.tracks.length}`;
+    }
+    updateSceneTint();
   }
 
   function frontCard() {
-    const cards = els.deck.children;
+    const cards = Array.from(els.deck.children);
     if (!cards.length) return null;
-    return cards[state.mode === 'wheel' ? state.frontIndex : 0];
+    if (state.mode === 'wheel') return cards[state.frontIndex] || null;
+    return cards.find((card) => card.dataset.id === state.selectedId) || cards[0] || null;
   }
 
   function togglePlayAnimation() {
@@ -636,18 +837,35 @@
     if (button) button.innerHTML = state.paused ? ICONS.play : ICONS.pause;
   }
 
+  /** A real tap on any visible card: rotate to it, or collapse if it is front. */
+  function selectCard(card) {
+    if (!card || card.style.visibility === 'hidden') return;
+    if (state.mode !== 'wheel') { openWheel(); return; }
+    const index = Array.prototype.indexOf.call(els.deck.children, card);
+    if (index < 0) return;
+    if (index === state.frontIndex) closeWheel();
+    else stepTo(index);
+  }
+
   /* ---------------------------------------------------------------- *
    * Input: wheel, touch swipe, mouse drag, keyboard
    * ---------------------------------------------------------------- */
   function moveGloss(clientX) {
-    const shift = (clientX / window.innerWidth - 0.5) * 46;
+    const rect = els.stage.getBoundingClientRect();
+    const shift = ((clientX - rect.left) / (rect.width || 1) - 0.5) * 46;
     root.style.setProperty('--gloss-shift', `${shift.toFixed(1)}px`);
+  }
+
+  /** Debug panel and small UI sit above the stage; they are not drag surfaces. */
+  function isSceneUI(target) {
+    return !!(target && target.closest &&
+      target.closest('.topbar, .hint, .back, .banner, .debug, .debug-overlay, .state-card'));
   }
 
   function bindInput() {
     let wheelCooldown = 0;
     els.stage.addEventListener('wheel', (event) => {
-      if (!state.tracks.length) return;
+      if (!state.tracks.length || isSceneUI(event.target)) return;
       event.preventDefault();
       openWheel();
       state.target = null;
@@ -658,13 +876,22 @@
       const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
       state.velocity = clamp(state.velocity + delta * 0.05, -24, 24);
       state.snapAt = now + 180;
+      // A tap during the momentum tail must not select a card.
+      state.suppressClickUntil = now + 350;
       moveGloss(event.clientX);
     }, { passive: false });
 
     els.stage.addEventListener('pointerdown', (event) => {
       moveGloss(event.clientX);
-      if (!state.tracks.length || event.target.closest('.control')) return;
+      if (!state.tracks.length || isSceneUI(event.target) || event.target.closest('.control')) return;
       if (event.button !== undefined && event.button !== 0) return;
+      if (event.isPrimary === false) return;
+      state.press = {
+        card: event.target.closest('.card'),
+        x: event.clientX, y: event.clientY,
+        t: performance.now(), moved: false, pointerId: event.pointerId
+      };
+      try { els.stage.setPointerCapture(event.pointerId); } catch (_) { /* older browser */ }
       state.dragging = true;
       state.moved = false;
       state.dragStartX = event.clientX;
@@ -675,6 +902,11 @@
 
     els.stage.addEventListener('pointermove', (event) => {
       moveGloss(event.clientX);
+      if (state.press && !state.press.moved) {
+        const dx = event.clientX - state.press.x;
+        const dy = event.clientY - state.press.y;
+        if (Math.hypot(dx, dy) > 6) state.press.moved = true;
+      }
       if (!state.dragging) return;
       const deltaX = event.clientX - state.lastX;
       const now = performance.now();
@@ -692,9 +924,22 @@
       state.lastT = now;
     });
 
-    function endDrag() {
+    function endDrag(event) {
+      if (event && event.isPrimary === false) return;
       if (!state.dragging) return;
+      const press = state.press;
+      const now = performance.now();
       state.dragging = false;
+      state.press = null;
+      if (press) {
+        try { els.stage.releasePointerCapture(press.pointerId); } catch (_) { /* already gone */ }
+      }
+
+      const isTap = press && press.card && !press.moved &&
+        now - press.t < 250 && now >= state.suppressClickUntil;
+      if (isTap) selectCard(press.card);
+      else if (press && press.moved) state.suppressClickUntil = now + 300;
+
       if (state.mode === 'wheel') state.snapAt = performance.now() + 120;
       else if (state.moved) openWheel();
       if (reduceMotion) { state.velocity = 0; snapToNearest(); }
@@ -702,20 +947,16 @@
     els.stage.addEventListener('pointerup', endDrag);
     els.stage.addEventListener('pointercancel', endDrag);
 
-    els.deck.addEventListener('click', (event) => {
-      if (event.target.closest('.control')) return;
-      if (state.moved) return;
-      if (state.mode !== 'wheel') { openWheel(); return; }
-      const card = event.target.closest('.card');
-      if (card) stepTo(Array.prototype.indexOf.call(els.deck.children, card));
-    });
-
     window.addEventListener('keydown', (event) => {
       if (!state.tracks.length) return;
+      if (event.target.closest && event.target.closest('button')) return;
       if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
         event.preventDefault(); stepTo(state.frontIndex + 1);
       } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
         event.preventDefault(); stepTo(state.frontIndex - 1);
+      } else if (event.key === 'Enter' && state.mode === 'wheel') {
+        event.preventDefault();
+        selectCard(frontCard()); // Enter collapses to the front/selected card
       } else if (event.key === 'Escape' && state.mode === 'wheel') {
         closeWheel();
       } else if (event.key === ' ') {
@@ -728,7 +969,10 @@
     els.stateRetry.addEventListener('click', load);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
     window.addEventListener('resize', () => {
-      if (state.tracks.length) { computeRadius(); applyWheel(); }
+      if (state.tracks.length) {
+        computeRadius();
+        if (state.mode === 'wheel') applyWheel();
+      }
     });
   }
 
@@ -758,7 +1002,7 @@
 
       if (!Array.isArray(data.tracks) || data.tracks.length === 0) {
         showState('♪', 'No listens yet',
-          'Play something in Apple Music with a scrobbler app connected to Last.fm, and it will appear here as a giant player card.');
+          'Play something in Apple Music with a scrobbler app connected to Last.fm, and your recent listens will appear here as giant player cards.');
         document.body.classList.remove('is-loading');
         return;
       }
@@ -781,8 +1025,10 @@
     const parts = card._parts;
 
     let seconds;
-    if (parts.nowPlaying) {
-      seconds = ((Date.now() - state.nowPlayingStart) / 1000) % parts.duration; // live animation
+    if (parts.nowPlaying || parts.demoProgress) {
+      // Last.fm has no "progress" for all-time favourites: loop it gently so
+      // the player card still looks alive without pretending to be a scrobble.
+      seconds = ((Date.now() - state.nowPlayingStart) / 1000) % parts.duration;
     } else {
       seconds = Math.min(parts.duration, Math.max(0, (Date.now() - Date.parse(parts.playedAt)) / 1000));
       parts.time.textContent = relativeTime(parts.playedAt);

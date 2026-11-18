@@ -4,35 +4,45 @@
    ================================================================== */
 
 :root {
-  /* Phone position in the photo, in percent. Set with ?debug=1. */
-  --phone-x: 50;
-  --phone-y: 68;
+  /* Phone position in the photo, in percent of the STAGE. Set with ?debug=1. */
+  --phone-x: 51;
+  --phone-y: 52;
 
-  /* Which part of the photo is visible with background-size: cover. */
-  --photo-x: 50%;
-  --photo-y: 50%;
+  /* The stage keeps the photo ratio: 941 / 1672. These two values let every
+     child size itself from the stage without ever consulting the viewport. */
+  --photo-ratio: 941 / 1672;
+  --stage-h: min(100vh, calc(100vw * 1.776301808));
+  --stage-w: min(100vw, calc(100vh * 0.562829665));
 
-  /* Card size. 9:14 portrait poster, about 56% of a phone's height. */
-  --card-w: min(78vw, 340px);
-  --card-h: calc(var(--card-w) * 14 / 9);
+  /* Front card: 36% of the stage height by default; --card-scale tunes it.
+     The 9:14 card ratio keeps the familiar giant player-proportions. */
   --card-scale: 1;
+  --card-h: calc(var(--stage-h) * 0.36 * var(--card-scale));
+  --card-w: calc(var(--card-h) * 0.642857143);
   --radius-scale: 1;
   --radius: 0px;
   --focus: 1;
+  --play-scale: 0.97;
+  --play-glow: 0.62;
+  --glow: 0.62;
+  --play-lift: 0.5;
 
   /* Front cover's dominant colour, extracted from the proxied image. */
   --tint-rgb: 120, 150, 210;
+  /* 70% cool photo white + 30% cover tint, kept in sync by app.js. */
+  --spill-rgb: 179, 206, 242;
   --tint-top: #293752;
   --tint-bottom: #0e1420;
   --gloss-shift: 0px;
 
-  --scene-photo: url('/assets/me.svg');
+  --scene-photo: url('/assets/me.jpg');
 }
 
-@media (min-width: 700px) {
+/* Dynamic viewport units avoid the mobile browser-chrome jump where supported. */
+@supports (height: 100dvh) {
   :root {
-    --card-w: clamp(290px, 27vw, 380px);
-    --phone-y: 68;
+    --stage-h: min(100dvh, calc(100vw * 1.776301808));
+    --stage-w: min(100vw, calc(100dvh * 0.562829665));
   }
 }
 
@@ -42,7 +52,7 @@
 html, body {
   height: 100%;
   margin: 0;
-  background: #05070d;
+  background: #0b0f17;
   color: #fff;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, system-ui, Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -50,172 +60,205 @@ html, body {
 }
 
 /* ------------------------------------------------------------------ *
-   1. The photo scene and its lighting
+   1. The photo stage and its light integration
    ------------------------------------------------------------------ */
 .scene {
   position: fixed;
   inset: 0;
+  display: grid;
+  place-items: center;
   overflow: hidden;
   isolation: isolate;
-  perspective: 1500px;
-  perspective-origin: 50% 46%;
+  /* Dark blue-grey bands blend into the photo instead of ending at a seam. */
+  background:
+    radial-gradient(ellipse at 50% 46%, #111827 0%, #0b0f17 58%, #080b12 100%);
 }
 
-.scene__photo {
-  position: absolute;
-  inset: -2%;
-  z-index: -4;
-  background-image: var(--scene-photo);
-  background-position: var(--photo-x) var(--photo-y);
-  background-size: cover;
-  transform: scale(1.03);
-  filter: saturate(.92);
+.stage {
+  position: relative;
+  z-index: 10;
+  width: var(--stage-w);
+  height: var(--stage-h);
+  aspect-ratio: 941 / 1672;
+  overflow: hidden;
+  isolation: isolate;
+  transform-style: preserve-3d;
+  perspective: calc(var(--stage-h) * 2.2);
+  perspective-origin: calc(var(--phone-x) * 1%) calc(var(--phone-y) * 1%);
+  touch-action: none; /* swipes are handled in JS */
 }
 
-.scene__grade {
+.stage__photo {
   position: absolute;
   inset: 0;
-  z-index: -3;
+  z-index: 0;
+  background-image: var(--scene-photo);
+  /* The stage has the exact photo ratio, so this is a contained photo, not a
+     full-screen cover crop. 52% keeps the phone point at the anchor. */
+  background-position: 50% 52%;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  filter: saturate(.92);
+  /* Feather only the photo layers so the side bands have no visible seam. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+}
+
+.stage__grade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(4, 6, 14, .78) 0%, rgba(4, 6, 14, .12) 32%, rgba(4, 6, 14, .48) 72%, rgba(4, 6, 14, .9) 100%),
-    radial-gradient(ellipse at 50% 55%, transparent 30%, rgba(2, 4, 10, .45) 100%);
+    linear-gradient(180deg, rgba(4, 7, 14, .34) 0%, transparent 22%, transparent 68%, rgba(4, 7, 14, .42) 100%),
+    radial-gradient(ellipse at calc(var(--phone-x) * 1%) 48%, transparent 32%, rgba(2, 4, 10, .24) 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
 }
 
 /* Very subtle film grain, drawn by the browser (no image file needed). */
-.scene__grain {
+.stage__grain {
   position: absolute;
   inset: 0;
-  z-index: -2;
+  z-index: 2;
   pointer-events: none;
   opacity: .045;
   mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.7'/%3E%3C/svg%3E");
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
 }
 
-/* Colour from the cover spilling onto the surface around the phone. */
-.surface-glow {
+/* Soft vertical spill from the card's glass back onto the beam already in the
+   photo. 70% photo white + 30% cover colour; deliberately low contrast. */
+.light-spill {
   position: absolute;
-  inset: 0;
-  z-index: 0;
+  left: calc(var(--phone-x) * 1%);
+  top: 7%;
+  z-index: 3;
+  width: calc(var(--card-w) * 2.1);
+  height: calc(var(--phone-y) * 1% - 7%);
   pointer-events: none;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  filter: blur(calc(var(--stage-h) * .018));
   mix-blend-mode: screen;
-  background: radial-gradient(ellipse at calc(var(--phone-x) * 1%) calc(var(--phone-y) * 1%),
-    rgba(var(--tint-rgb), .32), rgba(var(--tint-rgb), .09) 16%, transparent 34%);
+  background: linear-gradient(180deg,
+    rgba(var(--spill-rgb), .02) 0%,
+    rgba(var(--spill-rgb), .10) 55%,
+    rgba(var(--spill-rgb), .16) 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 24%, #000 76%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 24%, #000 76%, transparent);
   transition: background .5s ease;
 }
+body.is-wheel .light-spill { opacity: .7; }
 
-/* A cone of light rising from the flat phone screen. */
-.light-cone {
+/* Small extra glow exactly where the card's bottom edge meets the phone. */
+.contact-glow {
   position: absolute;
   left: calc(var(--phone-x) * 1%);
-  top: calc(var(--phone-y) * 1%);
-  z-index: 1;
-  width: min(78vw, 640px);
-  height: min(78vh, 720px);
-  pointer-events: none;
-  transform: translate(-50%, -100%);
-  transform-origin: bottom center;
-  clip-path: polygon(39% 100%, 61% 100%, 100% 0, 0 0);
-  background: linear-gradient(0deg, rgba(205, 230, 255, .42), rgba(160, 200, 255, .12) 42%, transparent 100%);
-  filter: blur(16px);
-  mix-blend-mode: screen;
-  opacity: .8;
-  transition: opacity .4s ease;
-}
-body.is-wheel .light-cone { opacity: .38; }
-
-/* Blurred shadow on the surface + bright contact line where card meets phone. */
-.cast-shadow {
-  position: absolute;
-  left: calc(var(--phone-x) * 1%);
-  top: calc(var(--phone-y) * 1% + 12px);
-  z-index: 2;
-  width: calc(var(--card-w) * var(--card-scale) * 1.5);
-  height: calc(var(--card-w) * var(--card-scale) * .26);
+  top: calc(var(--phone-y) * 1% - 1%);
+  z-index: 4;
+  width: calc(var(--card-w) * 1.45);
+  height: calc(var(--stage-h) * .042);
   pointer-events: none;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: radial-gradient(ellipse, rgba(0, 0, 0, .72), rgba(0, 0, 0, .28) 55%, transparent 78%);
-  filter: blur(12px);
+  mix-blend-mode: screen;
+  background: radial-gradient(ellipse,
+    rgba(226, 243, 255, .52) 0%,
+    rgba(180, 220, 255, .20) 42%,
+    transparent 76%);
+  filter: blur(calc(var(--stage-h) * .009));
 }
 
+/* Bright, thin physical contact line — not a floor shadow. */
 .contact-line {
   position: absolute;
   left: calc(var(--phone-x) * 1%);
-  top: calc(var(--phone-y) * 1%);
-  z-index: 3;
-  width: calc(var(--card-w) * var(--card-scale) * .82);
-  height: 2px;
+  top: calc(var(--phone-y) * 1% - 1%);
+  z-index: 5;
+  width: calc(var(--card-w) * .84);
+  height: max(1.5px, calc(var(--stage-h) * .0024));
   pointer-events: none;
   transform: translate(-50%, -50%);
   border-radius: 99px;
-  background: linear-gradient(90deg, transparent, rgba(225, 242, 255, .95), transparent);
-  box-shadow: 0 0 16px 4px rgba(170, 215, 255, .55);
+  background: linear-gradient(90deg, transparent, rgba(234, 248, 255, .98), transparent);
+  box-shadow: 0 0 calc(var(--stage-h) * .014) calc(var(--stage-h) * .003)
+    rgba(184, 222, 255, .6);
 }
 
-.phone-glow {
+/* Faint coloured bounce on the jacket / hand just below the card. */
+.jacket-reflection {
   position: absolute;
-  inset: 0;
+  left: calc(var(--phone-x) * 1%);
+  top: calc(var(--phone-y) * 1% + 1%);
   z-index: 3;
+  width: calc(var(--card-w) * 1.9);
+  height: calc(var(--stage-h) * .11);
   pointer-events: none;
-  background: radial-gradient(circle at calc(var(--phone-x) * 1%) calc(var(--phone-y) * 1%),
-    rgba(190, 225, 255, .34) 0%, rgba(140, 190, 255, .12) 8%, transparent 22%);
+  transform: translateX(-50%);
+  border-radius: 50%;
   mix-blend-mode: screen;
+  background: radial-gradient(ellipse at 50% 18%,
+    rgba(var(--tint-rgb), .17) 0%,
+    rgba(var(--tint-rgb), .055) 42%,
+    transparent 74%);
+  filter: blur(calc(var(--stage-h) * .012));
+  transition: background .5s ease;
 }
 
 /* ------------------------------------------------------------------ *
-   2. Header
+   2. Header — kept on the stage, clear of the halo and card
    ------------------------------------------------------------------ */
 .topbar {
   position: absolute;
-  inset: 0 0 auto 0;
+  left: 50%;
+  top: calc(50% - var(--stage-h) * .5 + max(10px, env(safe-area-inset-top)));
   z-index: 30;
+  width: var(--stage-w);
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
-  padding: max(16px, env(safe-area-inset-top)) clamp(14px, 4vw, 42px) 16px;
+  padding: 0 clamp(10px, 3.5%, 20px) 12px;
+  transform: translateX(-50%);
   pointer-events: none;
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand__mark {
   display: grid; place-items: center;
-  width: 34px; height: 34px; border-radius: 11px; font-size: 18px;
+  width: 30px; height: 30px; border-radius: 10px; font-size: 16px;
   background: rgba(255, 255, 255, .1);
   border: 1px solid rgba(255, 255, 255, .2);
   backdrop-filter: blur(8px);
 }
-.brand__title { margin: 0; font-size: clamp(13px, 1.8vw, 17px); font-weight: 650; letter-spacing: -.02em; }
-.brand__sub { margin: 2px 0 0; font-size: 11px; color: rgba(255, 255, 255, .62); }
+.brand__title { margin: 0; font-size: clamp(12px, 1.5vw, 16px); font-weight: 650; letter-spacing: -.02em; }
+.brand__sub { margin: 2px 0 0; font-size: 10.5px; color: rgba(255, 255, 255, .62); }
 
-.meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 11px; color: rgba(255, 255, 255, .68); }
+.meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; font-size: 10.5px; color: rgba(255, 255, 255, .68); }
 .status { display: inline-flex; align-items: center; gap: 6px; }
 .status__dot { width: 6px; height: 6px; border-radius: 50%; background: #8de0b0; box-shadow: 0 0 10px #8de0b0; }
 .status.is-stale .status__dot { background: #ffcc7a; box-shadow: 0 0 10px #ffcc7a; }
 .status.is-error .status__dot { background: #ff8b8b; box-shadow: 0 0 10px #ff8b8b; }
-.meta__line { display: flex; gap: 10px; align-items: center; }
+.meta__line { display: flex; gap: 8px; align-items: center; }
 .meta__counter { padding: 2px 7px; border-radius: 99px; background: rgba(255, 255, 255, .1); font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------------ *
-   3. Stage, deck and the giant card
+   3. Stage deck and the giant card
    ------------------------------------------------------------------ */
-.stage {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  display: grid;
-  place-items: center;
-  transform-style: preserve-3d;
-  touch-action: none; /* swipes are handled in JS */
-}
-
-/* Pushed back by the wheel radius: the front card ends up at z = 0. */
+/* The deck's bottom-centre is the phone anchor. Pushing it back by the wheel
+   radius makes the front card finish at z = 0, exactly on the photo. */
 .deck {
-  position: relative;
+  position: absolute;
+  left: calc(var(--phone-x) * 1%);
+  top: calc(var(--phone-y) * 1% - var(--stage-h) * .01);
+  z-index: 10;
   width: var(--card-w);
   height: var(--card-h);
+  transform-origin: 50% 100%;
+  transform: translate(-50%, -100%) translateZ(calc(-1 * var(--radius)));
   transform-style: preserve-3d;
-  transform: translateZ(calc(-1 * var(--radius)));
   transition: transform .5s cubic-bezier(.2, .8, .2, 1);
 }
 body.is-wheel .deck { transition: none; }
@@ -227,10 +270,11 @@ body.is-wheel .deck { transition: none; }
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
   pointer-events: none;
-  will-change: transform, opacity, filter;
+  will-change: transform, opacity, filter, visibility;
 }
-body:not(.is-wheel) .card:not(:first-child) { opacity: 0; visibility: hidden; }
+body:not(.is-wheel) .card:not(.is-selected) { opacity: 0; visibility: hidden; }
 body.is-wheel .card { pointer-events: auto; cursor: grab; }
+body.is-wheel .card[style*="visibility: hidden"] { pointer-events: none; }
 
 /* Scale + a small random tilt live on this wrapper so they never fight the
    rise animation on .card__surface or the wheel rotation on .card. */
@@ -238,25 +282,36 @@ body.is-wheel .card { pointer-events: auto; cursor: grab; }
   position: absolute;
   inset: 0;
   transform-origin: 50% 100%;
-  transform: scale(calc(var(--card-scale) * (0.74 + 0.26 * var(--focus))))
+  /* Play count sets the size; the wheel focus multiplies it. The max(0.82, …)
+     floor keeps even the quietest, side-most card readable. */
+  transform: translateY(calc(var(--stage-h) * -.006 * var(--play-lift, 0)))
+             scale(max(0.82, calc(var(--play-scale, .97) * (0.86 + 0.14 * var(--focus)))))
              rotateZ(var(--tilt-z, 0deg)) rotateX(var(--tilt-x, 0deg));
-  transition: transform .35s ease;
+  transition: transform .5s cubic-bezier(.2, .8, .2, 1);
 }
 
 .card__surface {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  border-radius: 28px;
+  border-radius: 26px;
   transform-origin: 50% 100%;
+  container-type: size;
+  container-name: card;
+  /* No floor shadow: a soft dark halo around the edges keeps the card legible
+     against the bright beam, while the play-count glow still scales with it. */
   box-shadow:
-    0 34px 80px rgba(0, 0, 0, .62),
-    0 0 46px rgba(var(--tint-rgb), .28),
-    inset 0 1px 0 rgba(255, 255, 255, .22);
+    0 0 calc(16px + 40px * var(--glow, .62))
+      rgba(0, 0, 0, calc(.38 + .24 * var(--glow, .62))),
+    0 0 calc(14px + 46px * var(--glow, .62))
+      rgba(var(--tint-rgb), calc(.10 + .30 * var(--glow, .62))),
+    inset 0 0 0 1px rgba(224, 242, 255, .16),
+    inset 0 1px 0 rgba(255, 255, 255, .3);
   animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both;
+  transition: box-shadow .5s ease;
 }
 
-/* Gradient rim light: bright at top-left and bottom-right, like a real object. */
+/* Gradient rim light: cool photo white, with the cover colour as an accent. */
 .card__surface::before {
   content: '';
   position: absolute;
@@ -266,23 +321,43 @@ body.is-wheel .card { pointer-events: auto; cursor: grab; }
   padding: 1px;
   pointer-events: none;
   background: linear-gradient(135deg,
-    rgba(255, 255, 255, .8), rgba(255, 255, 255, .06) 38%,
-    rgba(255, 255, 255, .04) 62%, rgba(255, 255, 255, .42));
+    rgba(232, 246, 255, calc(.24 + .58 * var(--glow, .62))),
+    rgba(255, 255, 255, calc(.07 + .2 * var(--glow, .62))) 36%,
+    rgba(var(--tint-rgb), calc(.14 + .32 * var(--glow, .62))) 72%,
+    rgba(225, 242, 255, calc(.22 + .52 * var(--glow, .62))));
+  transition: background .5s ease;
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask-composite: exclude;
 }
 
+/* Lit by the halo: darker at the top, faintly brighter at the bottom.
+   Increasing opacity with lower focus also keeps side cards progressively dim. */
+.card__surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+    rgba(0, 0, 0, .9) 0%,
+    rgba(0, 0, 0, .2) 56%,
+    rgba(214, 238, 255, .5) 100%);
+  opacity: calc(.25 + .1 * (1 - var(--focus)));
+  transition: opacity .35s ease;
+}
+
 /* Two materials stacked: frosted glass underneath, cover-tinted colour on top. */
 .card__glass,
-.card__tint { position: absolute; inset: 0; }
+.card__tint { position: absolute; inset: 0; pointer-events: none; }
 .card__glass {
   background: linear-gradient(160deg, rgba(58, 64, 82, .68), rgba(10, 14, 24, .84));
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   opacity: calc(1 - var(--focus));
-  transition: opacity .35s ease;
+  filter: brightness(calc(.8 + .2 * var(--glow, .62)));
+  transition: opacity .35s ease, filter .5s ease;
 }
 .card__tint {
   background: linear-gradient(180deg, var(--tint-top), var(--tint-bottom));
@@ -297,35 +372,38 @@ body.is-wheel .card { pointer-events: auto; cursor: grab; }
   z-index: 5;
   pointer-events: none;
   transform: translateX(var(--gloss-shift));
+  /* Play count controls the glass highlight; the floor keeps it visible. */
+  opacity: calc(.2 + .8 * var(--glow, .62));
   background: linear-gradient(115deg,
     transparent 34%, rgba(255, 255, 255, .08) 44%,
     rgba(255, 255, 255, .02) 53%, transparent 66%);
+  transition: opacity .5s ease;
 }
 
 @keyframes emerge {
   0% {
     opacity: 0;
-    transform: translate(calc((var(--phone-x) - 50) * 1vw), calc((var(--phone-y) - 50) * 1vh))
+    transform: translateY(calc(var(--stage-h) * .012))
                rotateX(80deg) scale(.15);
     filter: blur(9px) brightness(1.9);
   }
   55% { opacity: 1; }
   100% {
     opacity: 1;
-    transform: translate(0, 0) rotateX(0deg) scale(1);
+    transform: translateY(0) rotateX(-3deg) scale(1);
     filter: blur(0) brightness(1);
   }
 }
 @keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  0%, 100% { transform: translateY(0) rotateX(-3deg); }
+  50% { transform: translateY(calc(var(--stage-h) * -.007)) rotateX(-3deg); }
 }
 @keyframes slideFront {
   from { opacity: 0; transform: translateX(26px) scale(.94); }
   to { opacity: 1; transform: translateX(0) scale(1); }
 }
 
-body:not(.is-wheel) .card:first-child .card__surface {
+body:not(.is-wheel) .card.is-selected .card__surface {
   animation: emerge 1000ms cubic-bezier(.16, 1.1, .3, 1) both,
              float 5s ease-in-out 1000ms infinite;
 }
@@ -346,35 +424,85 @@ body.is-wheel .card.is-entering .card__surface {
   flex-direction: column;
   height: 100%;
   padding: 13px;
+  padding: 3cqh 4cqw;
 }
 
 .cover {
   position: relative;
   width: 100%;
+  width: min(100%, 38cqh);
   aspect-ratio: 1 / 1;
   flex: 0 0 auto;
-  border-radius: 18px;
+  margin: 0 auto;
+  border-radius: 12px;
+  border-radius: 5cqw;
   overflow: hidden;
   background: rgba(255, 255, 255, .08);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 12px 26px rgba(0, 0, 0, .4);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 8px 20px rgba(0, 0, 0, .4);
 }
 .cover img,
 .cover__gradient { display: block; width: 100%; height: 100%; object-fit: cover; }
 .cover__gradient {
   display: grid; place-items: center;
-  font-size: 84px; font-weight: 800; color: rgba(255, 255, 255, .78);
+  font-size: 84px;
+  font-size: clamp(24px, 20cqh, 84px);
+  font-weight: 800; color: rgba(255, 255, 255, .78);
   text-shadow: 0 4px 26px rgba(0, 0, 0, .35);
 }
 .cover__shade {
   position: absolute; inset: 0; pointer-events: none;
   background: linear-gradient(180deg, transparent 62%, rgba(0, 0, 0, .3));
 }
+.card__selected {
+  position: absolute; top: 12px; right: 12px; z-index: 10;
+  padding: 4px 7px; border-radius: 99px;
+  font-size: 9.5px;
+  font-size: clamp(7.5px, 2.7cqh, 9.5px);
+  font-weight: 750; letter-spacing: .08em; text-transform: uppercase;
+  color: #fff; background: rgba(255, 255, 255, .2);
+  border: 1px solid rgba(255, 255, 255, .65);
+  box-shadow: 0 0 14px rgba(255, 255, 255, .35);
+  backdrop-filter: blur(8px);
+  opacity: 0; pointer-events: none;
+  transition: opacity .35s ease;
+}
+.card.is-selected .card__selected { opacity: 1; }
+.card.is-selected .card__surface {
+  box-shadow:
+    0 0 calc(18px + 40px * var(--glow, .62))
+      rgba(0, 0, 0, calc(.38 + .24 * var(--glow, .62))),
+    0 0 calc(18px + 46px * var(--glow, .62))
+      rgba(var(--tint-rgb), calc(.18 + .38 * var(--glow, .62))),
+    inset 0 0 0 1px rgba(230, 245, 255, .6),
+    inset 0 1px 0 rgba(255, 255, 255, .34);
+}
+/* Small rank tag on the artwork: readable on every card, even the smallest. */
+.cover__rank {
+  position: absolute; top: 10px; left: 10px; z-index: 2; pointer-events: none;
+  padding: 4px 8px; border-radius: 99px;
+  font-size: 12px;
+  font-size: clamp(9px, 3.4cqh, 12px);
+  font-weight: 750; letter-spacing: .02em; line-height: 1;
+  color: #fff;
+  background: rgba(8, 12, 22, .64);
+  border: 1px solid rgba(255, 255, 255, .32);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  backdrop-filter: blur(8px);
+}
+.card--podium .cover__rank {
+  color: #2b1b04;
+  background: linear-gradient(135deg, rgba(255, 226, 160, .96), rgba(228, 166, 66, .92));
+  border-color: rgba(255, 245, 210, .85);
+  box-shadow: 0 0 18px rgba(255, 202, 106, .5);
+}
 
 .card__meta {
   display: flex;
   align-items: center;
   gap: 10px;
+  gap: 2cqw;
   padding: 13px 3px 0;
+  padding: 2.6cqh 1cqw 0;
 }
 .card__labels { flex: 1; min-width: 0; }
 .card__title,
@@ -384,10 +512,23 @@ body.is-wheel .card.is-entering .card__surface {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.card__title { font-size: clamp(16px, 1.7vw, 21px); font-weight: 700; letter-spacing: -.02em; }
-.card__artist { margin-top: 2px; font-size: 12px; color: rgba(255, 255, 255, .6); }
-.card__icons { display: flex; gap: 8px; flex: 0 0 auto; color: rgba(255, 255, 255, .85); }
-.card__icons svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+/* 18px × the 0.82 minimum play-count scale keeps ~14.8px even on the
+   smallest stage; the old 17.5px floor remains the reference for larger cards. */
+.card__title {
+  font-size: clamp(18px, 6.4cqh, 22px);
+  font-weight: 700; letter-spacing: -.02em;
+}
+.card__artist {
+  margin-top: 2px;
+  font-size: clamp(11px, 3.6cqh, 13px);
+  color: rgba(255, 255, 255, .68);
+}
+.card__icons { display: flex; gap: 8px; gap: 1.5cqw; flex: 0 0 auto; color: rgba(255, 255, 255, .85); }
+.card__icons svg {
+  width: 17px; height: 17px;
+  width: clamp(12px, 5cqw, 17px); height: clamp(12px, 5cqw, 17px);
+  fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
+}
 .eq rect { fill: currentColor; transform-origin: center bottom; }
 .eq.is-live rect { animation: eq 900ms ease-in-out infinite alternate; }
 .eq.is-live rect:nth-child(2) { animation-delay: -600ms; }
@@ -397,30 +538,52 @@ body.is-wheel .card.is-entering .card__surface {
 
 .card__time {
   display: flex; align-items: center; gap: 6px;
-  padding: 7px 3px 0; font-size: 10.5px; color: rgba(255, 255, 255, .62);
+  padding: 7px 3px 0;
+  padding: 1.8cqh 1cqw 0;
+  font-size: clamp(9px, 3cqh, 10.5px); color: rgba(255, 255, 255, .7);
 }
 .card__time--live { color: #d7f3e4; }
+.card__plays {
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, .96);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, .55);
+}
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #79e6a5; box-shadow: 0 0 9px #79e6a5; animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
 
-.progress { padding: 14px 3px 0; }
-.progress__track { position: relative; height: 4px; border-radius: 99px; background: rgba(255, 255, 255, .24); }
+.progress { padding: 14px 3px 0; padding: 2.6cqh 1cqw 0; }
+.progress__track {
+  position: relative;
+  height: 4px;
+  height: max(3px, 1.2cqh);
+  border-radius: 99px;
+  background: rgba(255, 255, 255, .28);
+}
 .progress__fill { width: 0; height: 100%; border-radius: 99px; background: #fff; box-shadow: 0 0 10px rgba(255, 255, 255, .55); }
 .progress__knob {
   position: absolute; top: 50%; left: 0;
-  width: 10px; height: 10px; border-radius: 50%; background: #fff;
+  width: 8px; height: 8px;
+  width: max(7px, 2.4cqh); height: max(7px, 2.4cqh);
+  border-radius: 50%; background: #fff;
   transform: translate(-50%, -50%); box-shadow: 0 0 9px rgba(255, 255, 255, .8);
 }
 .progress__times {
   display: flex; justify-content: space-between;
-  margin-top: 7px; font-size: 10px; font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, .66);
+  margin-top: 7px;
+  margin-top: 1.4cqh;
+  font-size: 10px;
+  font-size: clamp(8px, 2.7cqh, 10px);
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, .72);
 }
 
 .controls {
   display: flex; align-items: center; justify-content: center;
   gap: clamp(26px, 5vw, 44px);
+  gap: 8cqw;
   padding: clamp(12px, 2.2vh, 22px) 0 8px;
+  padding: 2.4cqh 0 1cqh;
 }
 .control {
   display: grid; place-items: center;
@@ -428,16 +591,28 @@ body.is-wheel .card.is-entering .card__surface {
   cursor: pointer; transition: transform .15s ease, opacity .15s ease;
 }
 .control:hover { transform: scale(1.12); }
-.control svg { width: 27px; height: 27px; fill: currentColor; }
-.control--play svg { width: 36px; height: 36px; }
+.control svg {
+  width: 27px; height: 27px;
+  width: clamp(18px, 8cqw, 27px); height: clamp(18px, 8cqw, 27px);
+  fill: currentColor;
+}
+.control--play svg {
+  width: 36px; height: 36px;
+  width: clamp(26px, 11cqw, 36px); height: clamp(26px, 11cqw, 36px);
+}
 
 .volume {
   display: flex; align-items: center; gap: 8px;
+  gap: 2cqw;
   margin-top: auto; padding: 6px 3px 0;
+  padding: 1.4cqh 1cqw 0;
   color: rgba(255, 255, 255, .8);
 }
-.volume svg { width: 15px; height: 15px; flex: 0 0 auto; fill: currentColor; }
-.volume__track { position: relative; flex: 1; height: 3px; border-radius: 99px; background: rgba(255, 255, 255, .22); }
+.volume svg {
+  width: 15px; height: 15px; flex: 0 0 auto; fill: currentColor;
+  width: clamp(11px, 4.6cqw, 15px); height: clamp(11px, 4.6cqw, 15px);
+}
+.volume__track { position: relative; flex: 1; height: 3px; border-radius: 99px; background: rgba(255, 255, 255, .25); }
 .volume__fill { width: 72%; height: 100%; border-radius: 99px; background: #fff; }
 .volume__knob { position: absolute; top: 50%; left: 72%; width: 8px; height: 8px; border-radius: 50%; background: #fff; transform: translate(-50%, -50%); }
 
@@ -460,19 +635,22 @@ body.is-wheel .card.is-entering .card__surface {
 
 .state-card {
   position: absolute;
-  width: min(88vw, 380px);
-  padding: 26px 24px;
-  border-radius: 24px;
+  left: 50%;
+  top: 50%;
+  width: min(78%, calc(var(--stage-h) * .44));
+  padding: 22px 18px;
+  border-radius: 22px;
   text-align: center;
+  transform: translate(-50%, -50%);
   border: 1px solid rgba(255, 255, 255, .26);
-  background: rgba(14, 18, 32, .68);
+  background: rgba(14, 18, 32, .72);
   backdrop-filter: blur(18px) saturate(140%);
   box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
   animation: emerge 800ms cubic-bezier(.16, 1.1, .3, 1) both;
 }
-.state-card__icon { font-size: 34px; opacity: .8; }
-.state-card h2 { margin: 10px 0 8px; font-size: 19px; }
-.state-card p { margin: 0; font-size: 13px; line-height: 1.55; color: rgba(255, 255, 255, .72); }
+.state-card__icon { font-size: 30px; opacity: .8; }
+.state-card h2 { margin: 10px 0 8px; font-size: 18px; }
+.state-card p { margin: 0; font-size: 12.5px; line-height: 1.55; color: rgba(255, 255, 255, .74); }
 .state-card__button,
 .banner button {
   margin-top: 16px; padding: 9px 16px; border-radius: 99px;
@@ -482,60 +660,76 @@ body.is-wheel .card.is-entering .card__surface {
 .state-card__button:hover, .banner button:hover { background: rgba(255, 255, 255, .24); }
 
 /* ------------------------------------------------------------------ *
-   6. Small UI over the scene
+   6. Small UI, pinned inside the stage with safe margins
    ------------------------------------------------------------------ */
 .hint {
-  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%;
-  transform: translateX(-50%); z-index: 25; margin: 0; padding: 9px 16px;
-  border-radius: 99px; white-space: nowrap; font-size: 11.5px;
-  color: rgba(255, 255, 255, .78);
-  background: rgba(10, 14, 26, .42); border: 1px solid rgba(255, 255, 255, .14);
+  position: absolute; left: 50%;
+  bottom: calc(50% - var(--stage-h) * .475 + max(6px, env(safe-area-inset-bottom)));
+  transform: translateX(-50%); z-index: 25; margin: 0; padding: 8px 14px;
+  border-radius: 99px; white-space: nowrap; font-size: 10.5px;
+  color: rgba(255, 255, 255, .8);
+  background: rgba(10, 14, 26, .46); border: 1px solid rgba(255, 255, 255, .14);
   backdrop-filter: blur(10px); transition: opacity .4s ease; pointer-events: none;
 }
 .hint.is-hidden { opacity: 0; }
 .back {
-  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%;
-  transform: translateX(-50%); z-index: 26; padding: 11px 20px; border-radius: 99px;
-  border: 1px solid rgba(255, 255, 255, .3); background: rgba(18, 24, 42, .62);
-  color: #fff; font: inherit; font-size: 12px; cursor: pointer; backdrop-filter: blur(12px);
+  position: absolute; left: 50%;
+  bottom: calc(50% - var(--stage-h) * .475 + max(6px, env(safe-area-inset-bottom)));
+  transform: translateX(-50%); z-index: 26; padding: 10px 18px; border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, .3); background: rgba(18, 24, 42, .68);
+  color: #fff; font: inherit; font-size: 11.5px; cursor: pointer; backdrop-filter: blur(12px);
 }
-.back:hover { background: rgba(40, 52, 84, .75); }
+.back:hover { background: rgba(40, 52, 84, .8); }
 .banner {
-  position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 28;
-  display: flex; align-items: center; gap: 12px; max-width: min(92vw, 620px);
-  padding: 10px 14px; border-radius: 14px; font-size: 11.5px; line-height: 1.4;
-  background: rgba(48, 34, 12, .74); border: 1px solid rgba(255, 204, 122, .4);
+  position: absolute; left: 50%;
+  top: calc(50% - var(--stage-h) * .395);
+  transform: translateX(-50%); z-index: 28;
+  display: flex; align-items: center; gap: 12px;
+  width: var(--stage-w);
+  max-width: var(--stage-w);
+  padding: 9px 14px; border-radius: 14px; font-size: 11px; line-height: 1.4;
+  background: rgba(48, 34, 12, .78); border: 1px solid rgba(255, 204, 122, .4);
   backdrop-filter: blur(12px);
 }
 .banner button { margin: 0; flex: 0 0 auto; }
 
 /* ------------------------------------------------------------------ *
-   7. ?debug=1 tuning panel
+   7. ?debug=1 tuning panel — coordinates are relative to the stage
    ------------------------------------------------------------------ */
 .debug {
-  position: absolute; right: 14px; bottom: 14px; z-index: 40;
-  width: min(270px, 78vw); padding: 13px 15px; border-radius: 14px; font-size: 11.5px;
-  background: rgba(8, 12, 24, .9); border: 1px solid rgba(140, 200, 255, .4);
+  position: absolute;
+  right: calc(50% - var(--stage-w) * .5 + 10px);
+  bottom: calc(50% - var(--stage-h) * .5 + 10px);
+  z-index: 40;
+  width: min(250px, 74%); padding: 11px 13px; border-radius: 14px; font-size: 11px;
+  background: rgba(8, 12, 24, .92); border: 1px solid rgba(140, 200, 255, .4);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
 }
-.debug p { margin: 7px 0; color: rgba(255, 255, 255, .7); }
+.debug p { margin: 6px 0; color: rgba(255, 255, 255, .7); }
 .debug code { display: block; color: #a9e0ff; line-height: 1.55; white-space: pre-line; }
-.debug__row { display: block; margin-top: 9px; }
+.debug__row { display: block; margin-top: 8px; }
 .debug__row span { display: flex; justify-content: space-between; }
 .debug__row input { width: 100%; accent-color: #8cc8ff; }
-.debug-overlay { position: absolute; inset: 0; z-index: 35; cursor: crosshair; }
+.debug-overlay {
+  position: absolute; left: 50%; top: 50%;
+  width: var(--stage-w); height: var(--stage-h);
+  transform: translate(-50%, -50%);
+  z-index: 35; cursor: crosshair;
+}
 
 /* ------------------------------------------------------------------ *
    8. Reduced motion: fades only, no float, no spring
    ------------------------------------------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   .card__surface,
-  body:not(.is-wheel) .card:first-child .card__surface,
+  body:not(.is-wheel) .card.is-selected .card__surface,
   body.is-wheel .card__surface,
   body.is-wheel .card.is-entering .card__surface,
   .card.is-new .card__scaler,
   .state-card, .live-dot, .skeleton, .eq.is-live rect {
     animation: none !important;
   }
-  .card__scaler, .deck, .phone-glow, .light-cone, .hint, .control { transition: none !important; }
+  .card__scaler, .card__surface, .card__surface::before, .card__surface::after,
+  .card__glass, .card__gloss, .card__selected, .deck,
+  .light-spill, .jacket-reflection, .hint, .control { transition: none !important; }
 }

@@ -10,17 +10,28 @@
 <body class="is-loading">
   <div class="scene" id="scene">
 
-    <!-- Background photo (me.jpg, with me.svg fallback) and scene grading. -->
-    <div class="scene__photo" id="scenePhoto" aria-hidden="true"></div>
-    <div class="scene__grade" aria-hidden="true"></div>
-    <div class="scene__grain" aria-hidden="true"></div>
+    <!-- The stage owns the photo, its crop and every stage-relative position. -->
+    <main class="stage" id="stage" aria-label="Your recent listens, from newest to oldest">
+      <div class="stage__photo" id="scenePhoto" aria-hidden="true"></div>
+      <div class="stage__grade" aria-hidden="true"></div>
+      <div class="stage__grain" aria-hidden="true"></div>
 
-    <!-- Light and shadow that make the cards feel physically inside the photo. -->
-    <div class="surface-glow" aria-hidden="true"></div>
-    <div class="light-cone" aria-hidden="true"></div>
-    <div class="cast-shadow" aria-hidden="true"></div>
-    <div class="contact-line" aria-hidden="true"></div>
-    <div class="phone-glow" aria-hidden="true"></div>
+      <!-- Only the photo's own halo is augmented; no second light cone. -->
+      <div class="light-spill" aria-hidden="true"></div>
+      <div class="contact-glow" aria-hidden="true"></div>
+      <div class="contact-line" aria-hidden="true"></div>
+      <div class="jacket-reflection" aria-hidden="true"></div>
+
+      <div class="deck" id="deck"></div>
+
+      <!-- Friendly empty / error state when there is nothing to show. -->
+      <section class="state-card" id="stateCard" hidden>
+        <div class="state-card__icon" id="stateIcon" aria-hidden="true">♪</div>
+        <h2 id="stateTitle"></h2>
+        <p id="stateBody"></p>
+        <button class="state-card__button" id="stateRetry" type="button" hidden>Try again</button>
+      </section>
+    </main>
 
     <header class="topbar">
       <div class="brand">
@@ -41,19 +52,7 @@
       </div>
     </header>
 
-    <main class="stage" id="stage" aria-label="Recent music player cards">
-      <div class="deck" id="deck"></div>
-
-      <!-- Friendly empty / error state when there is nothing to show. -->
-      <section class="state-card" id="stateCard" hidden>
-        <div class="state-card__icon" id="stateIcon" aria-hidden="true">♪</div>
-        <h2 id="stateTitle"></h2>
-        <p id="stateBody"></p>
-        <button class="state-card__button" id="stateRetry" type="button" hidden>Try again</button>
-      </section>
-    </main>
-
-    <p class="hint" id="hint">Scroll, swipe or use ← → to turn the cards</p>
+    <p class="hint" id="hint">Scroll, swipe or use ← → to explore the ranking</p>
     <button class="back" id="backButton" type="button" hidden>↩ Back to phone</button>
 
     <div class="banner" id="banner" hidden>
